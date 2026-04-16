@@ -1302,8 +1302,8 @@ if (view === 'splash') return (
                             <p className="font-black text-[15px] text-gray-900 leading-none">₹{p.cost}</p>
                             {p.mrp && p.mrp > p.cost && (
                               <>
-                                <p className="text-[11px] text-gray-400 line-through font-medium leading-none">₹{p.mrp}</p>
-                                <span className="text-[9px] font-bold leading-none tracking-tight" style={{color: theme.offer}}>
+                                <p className="text-[14px] text-gray-400 line-through font-medium leading-none">MRP ₹{p.mrp}</p>
+                                <span className="text-[12px] font-bold leading-none tracking-tight" style={{color: theme.offer}}>
                                   ({p.discount ? `${p.discount}% OFF` : 'SALE'})
                                 </span>
                               </>
@@ -1360,8 +1360,8 @@ if (view === 'splash') return (
                     <p className="text-[26px] font-black text-gray-900 leading-none">₹{selectedProduct.cost}</p>
                     {selectedProduct.mrp && selectedProduct.mrp > selectedProduct.cost && (
                       <div className="flex flex-col justify-center mt-1">
-                        <p className="text-[12px] text-gray-400 line-through font-bold leading-none">₹{selectedProduct.mrp}</p>
-                        <span className="bg-[#E5F7ED] text-[#008A00] px-1 py-[2px] rounded text-[9px] font-black tracking-wider leading-none mt-1 w-fit">
+                        <p className="text-[14px] text-gray-400 line-through font-bold leading-none">MRP ₹{selectedProduct.mrp}</p>
+                        <span className="bg-[#E5F7ED] text-[#008A00] px-1 py-[2px] rounded text-[12px] font-black tracking-wider leading-none mt-1 w-fit">
                           {selectedProduct.discount}% OFF
                         </span>
                       </div>
@@ -1397,9 +1397,9 @@ if (view === 'splash') return (
                         <div className="flex flex-col">
                           <div className="flex items-center gap-2">
                              <p className="font-black text-[16px] leading-tight" style={isSelected ? {color: theme.primary} : {color: '#111827'}}>{size}</p>
-                             {extraPrice > 0 && <span className="text-[9px] bg-white text-gray-600 px-1.5 py-0.5 rounded font-bold border border-gray-200">+₹{extraPrice}</span>}
+                             
                           </div>
-                          <p className="text-[10px] text-gray-500 font-medium mt-0.5">{boxSize} Pcs Box</p>
+                          <p className="text-[10px] text-gray-500 font-medium mt-0.5">{boxSize} Pcs Box {extraPrice > 0 && <span className="text-[12px] bg-orange text-gray-600 px-1.5 py-0.5 rounded font-bold border border-gray-200">+₹{extraPrice} Extra Price Per Pc </span>}</p>
                         </div>
                         <div className="flex items-center gap-3">
                           <button onClick={() => updateQty(size, -1, boxSize)} className={`w-8 h-8 rounded-full border flex items-center justify-center font-black active:scale-95 transition-all text-lg leading-none ${isSelected ? 'bg-white' : 'border-gray-200 text-gray-400'}`} style={isSelected ? {borderColor: theme.primary, color: theme.primary} : {}}>-</button>
