@@ -1115,21 +1115,129 @@ if (view === 'splash') return (
 
       {zoomOverlay && (
         <div className="fixed inset-0 z-[2000] bg-black/95 flex flex-col items-center justify-center backdrop-blur-sm">
-          <button onClick={() => setZoomOverlay(null)} className="absolute top-6 right-6 p-3 bg-white/10 text-white rounded-full z-20"><X size={24} /></button>
+          {zoomOverlay && (
+        <div className="fixed inset-0 z-[2000] bg-black/95 flex flex-col items-center justify-center backdrop-blur-sm">
+          {/* Close Button */}
+          <button onClick={() => setZoomOverlay(null)} className="absolute top-6 right-6 p-3 bg-white/10 text-white rounded-full z-[2100] active:bg-white/20">
+            <X size={24} />
+          </button>
+          
+          {/* Image Counter */}
           {zoomOverlay.images.length > 1 && (
-            <div className="absolute top-8 left-1/2 -translate-x-1/2 bg-white/20 text-white px-4 py-1.5 rounded-full text-xs font-bold tracking-widest z-20">
+            <div className="absolute top-8 left-1/2 -translate-x-1/2 bg-white/20 text-white px-4 py-1.5 rounded-full text-xs font-bold tracking-widest z-[2100]">
               {zoomOverlay.currentIndex + 1} / {zoomOverlay.images.length}
             </div>
           )}
-          <div className="relative w-full max-w-md flex items-center justify-center h-full">
+
+      {/* 🌟 NAYA: Swipe + Native Pinch-to-Zoom Tracker */}
+          <div 
+            className="relative w-full h-full flex items-center justify-center overflow-auto scrollbar-hide"
+            onTouchStart={(e) => {
+              if (e.touches.length === 2) {
+                // Agar 2 fingers hain, toh unke beech ka distance calculate karo
+                const dist = Math.hypot(
+                  e.touches[0].clientX - e.touches[1].clientX,
+                  e.touches[0].clientY - e.touches[1].clientY
+                );
+                e.currentTarget.dataset.pinchDist = dist.toString();
+                
+                // Current zoom level save karo
+                const img = document.getElementById('zoomed-img');
+                if (img) {
+                  const currentScale = img.style.transform.match(/scale\(([^)]+)\)/)?.[1] || '1';
+                  e.currentTarget.dataset.baseScale = currentScale;
+                }
+              } else if (e.touches.length === 1) {
+                // Agar 1 finger hai toh swipe ke liye X position save karo
+                e.currentTarget.dataset.touchstartX = e.changedTouches[0].clientX.toString();
+              }
+            }}
+            onTouchMove={(e) => {
+              if (e.touches.length === 2) {
+                // 🌟 Pinch Zoom Logic
+                const startDist = parseFloat(e.currentTarget.dataset.pinchDist || '0');
+                const baseScale = parseFloat(e.currentTarget.dataset.baseScale || '1');
+                
+                if (startDist > 0) {
+                  const dist = Math.hypot(
+                    e.touches[0].clientX - e.touches[1].clientX,
+                    e.touches[0].clientY - e.touches[1].clientY
+                  );
+                  
+                  // Naya scale calculate karo (Min 1x, Max 4x zoom limit)
+                  let newScale = baseScale * (dist / startDist);
+                  newScale = Math.min(Math.max(1, newScale), 4);
+                  
+                  const img = document.getElementById('zoomed-img');
+                  if (img) img.style.transform = `scale(${newScale})`;
+                }
+              }
+            }}
+            onTouchEnd={(e) => {
+              // Pinch reset
+              e.currentTarget.dataset.pinchDist = '0';
+
+              // 🌟 Swipe Logic (Left / Right)
+              if (e.changedTouches.length === 1) {
+                const startX = parseFloat(e.currentTarget.dataset.touchstartX || '0');
+                const endX = e.changedTouches[0].clientX;
+                const diff = startX - endX;
+
+                // Left Swipe -> Next Image
+                if (diff > 50 && zoomOverlay.currentIndex < zoomOverlay.images.length - 1) {
+                  setZoomOverlay(prev => prev ? {...prev, currentIndex: prev.currentIndex + 1} : null);
+                  const img = document.getElementById('zoomed-img');
+                  if (img) img.style.transform = 'scale(1)'; 
+                } 
+                // Right Swipe -> Previous Image
+                else if (diff < -50 && zoomOverlay.currentIndex > 0) {
+                  setZoomOverlay(prev => prev ? {...prev, currentIndex: prev.currentIndex - 1} : null);
+                  const img = document.getElementById('zoomed-img');
+                  if (img) img.style.transform = 'scale(1)';
+                }
+              }
+            }}
+          >
+            {/* Prev Arrow */}
             {zoomOverlay.currentIndex > 0 && (
-              <button onClick={() => setZoomOverlay(prev => ({...prev, currentIndex: prev.currentIndex - 1}))} className="absolute left-4 p-3 bg-white/10 text-white rounded-full z-10 hover:bg-white/20 transition-colors"><ChevronLeft size={28}/></button>
+              <button onClick={(e) => { e.stopPropagation(); setZoomOverlay(prev => prev ? {...prev, currentIndex: prev.currentIndex - 1} : null); }} className="absolute left-4 p-3 bg-white/10 text-white rounded-full z-[2100] hover:bg-white/20 transition-colors hidden md:flex">
+                <ChevronLeft size={28}/>
+              </button>
             )}
-            <img src={zoomOverlay.images[zoomOverlay.currentIndex]} className="w-full h-auto max-h-[85vh] object-contain transition-all duration-300" alt="Zoomed" />
+
+            {/* Zoomable Image */}
+            <div className="w-full max-w-md flex items-center justify-center p-2 min-h-full">
+              <img 
+                id="zoomed-img"
+                src={zoomOverlay.images[zoomOverlay.currentIndex]} 
+className="w-full h-auto max-h-[85vh] object-contain transition-transform duration-75 origin-center cursor-zoom-in"
+                alt="Zoomed" 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  // Double Tap / Single Tap zoom in-out
+                  const img = e.currentTarget;
+                  const isZoomed = img.style.transform.includes('scale(2.5)');
+                  img.style.transform = isZoomed ? 'scale(1)' : 'scale(2.5)';
+                  img.style.transitionDuration = '300ms'; // Smooth animation for tap
+                  setTimeout(() => { img.style.transitionDuration = '50ms'; }, 300); // Reset for pinch
+                }}
+              />
+            </div>
+
+            {/* Next Arrow */}
             {zoomOverlay.currentIndex < zoomOverlay.images.length - 1 && (
-              <button onClick={() => setZoomOverlay(prev => ({...prev, currentIndex: prev.currentIndex + 1}))} className="absolute right-4 p-3 bg-white/10 text-white rounded-full z-10 rotate-180 hover:bg-white/20 transition-colors"><ChevronLeft size={28}/></button>
+              <button onClick={(e) => { e.stopPropagation(); setZoomOverlay(prev => prev ? {...prev, currentIndex: prev.currentIndex + 1} : null); }} className="absolute right-4 p-3 bg-white/10 text-white rounded-full z-[2100] rotate-180 hover:bg-white/20 transition-colors hidden md:flex">
+                <ChevronLeft size={28}/>
+              </button>
             )}
           </div>
+          
+          {/* User Hint */}
+          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 text-[10px] text-white/50 font-bold tracking-widest uppercase pointer-events-none z-[2100]">
+            Swipe • Tap to zoom
+          </div>
+        </div>
+      )}
         </div>
       )}
 
