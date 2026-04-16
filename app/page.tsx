@@ -1618,10 +1618,45 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
                           <div className="flex flex-col ml-1">
                              <p className="font-bold text-gray-600 text-[11px]">
                                {/* 🌟 FIX 2: Text ko span mein rakha */}
-                               <span>{shippingCharge > 0 ? 'Pay Ship charge 100/- Advance on' : 'Free Shipping'}</span>
+                               <span>{shippingCharge > 0 ? 'To Confirm, Pay Shipping 100/- on' : 'Free Shipping'}</span>
                              </p>
                              {shippingCharge > 0 && (
-                               <p className="font-black text-gray-900 text-[13px]"><span>Paytm/Gpay 9758008624</span></p>
+                               <div className="flex flex-col justify-center">
+            
+              
+              <div className="flex bg-white border border-blue-200 rounded-md overflow-hidden shadow-sm w-fit">
+                {/* GPay Button */}
+                <button onClick={(e) => {
+                    e.stopPropagation();
+                    window.location.href = `tez://upi/pay?pa=gpay-11165292302@okbizaxis&pn=Nayika%20Naari&tn=${currentUser?.name}_${currentUser?.phone}&am=100&cu=INR`;
+                  }} 
+                  className="px-2.5 py-1.5 text-[9px] font-black text-blue-700 hover:bg-blue-50 border-r border-blue-100 active:bg-blue-100 transition-colors"
+                >
+                  GPay
+                </button>
+
+                {/* PhonePe Button */}
+                <button onClick={(e) => {
+                    e.stopPropagation();
+                    window.location.href = `phonepe://pay?pa=gpay-11165292302@okbizaxis&pn=Nayika%20Naari&tn=${currentUser?.name}_${currentUser?.phone}&am=100&cu=INR`;
+                  }} 
+                  className="px-2.5 py-1.5 text-[9px] font-black text-purple-700 hover:bg-purple-50 border-r border-blue-100 active:bg-purple-100 transition-colors"
+                >
+                  PhonPe
+                </button>
+
+                {/* Paytm Button */}
+                <button onClick={(e) => {
+                    e.stopPropagation();
+                    window.location.href = `paytmmp://pay?pa=gpay-11165292302@okbizaxis&pn=Nayika%20Naari&tn=${currentUser?.name}_${currentUser?.phone}&am=100&cu=INR`;
+                  }} 
+                  className="px-2.5 py-1.5 text-[9px] font-black text-[#00B9F5] hover:bg-[#F0FAFF] active:bg-[#D9F4FF] transition-colors"
+                >
+                  Paytm
+                </button>
+              </div>
+            </div>
+                               //<p className="font-black text-gray-900 text-[13px]"><span>Paytm/Gpay 9758008624</span></p>
                              )}
                           </div>
                           <div className="flex items-center gap-2">
