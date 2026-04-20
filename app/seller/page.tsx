@@ -8,9 +8,10 @@ import {
   LayoutDashboard, Package, Plus, UploadCloud, Search, 
   Loader2, X, ChevronLeft, Image as ImageIcon, CheckCircle2, 
   ToggleLeft, ToggleRight, Trash2, Edit2, ChevronRight,
-  SlidersHorizontal, Copy, ClipboardList, User, MapPin, Truck, FileText, Save, Phone,
-  Users, MessageCircle, ShoppingCart, TrendingUp, Calendar, Share2
-} from 'lucide-react'; // 🌟 NAYA: Share2 icon add kiya hai
+  SlidersHorizontal, Copy, ClipboardList, User, MapPin, Truck, FileText, Save, Phone,Lock,
+  Users, MessageCircle, ShoppingCart, TrendingUp, Calendar, Share2,
+  Activity, UserPlus, ShoppingBag 
+} from 'lucide-react';
 
 const safeParseJSON = (data: any, fallback: any) => {
   if (!data) return fallback;
@@ -110,6 +111,114 @@ export default function SellerDashboard() {
   // Image Zoom Overlay State
   const [zoomOverlay, setZoomOverlay] = useState<{images: string[], currentIndex: number} | null>(null);
 
+  // 🌟 NAYA: Dashboard Stats State
+  const [dashStats, setDashStats] = useState({
+    today: { active: 0, new: 0, buyers: 0, orders: 0, carts: 0 },
+    week: { active: 0, new: 0, buyers: 0, orders: 0, carts: 0 }
+  });
+
+// 🌟 ACCURATE ANALYTICS FETCH FUNCTION (100% FIXED)
+  const fetchDashboardStats = async () => {
+    try {
+      // 1. Timezone & Formatting Fix (Comparing in Milliseconds is safest)
+      const today = new Date();
+      today.setHours(0, 0, 0, 0); // Start of today (Midnight)
+      const startOfTodayMs = today.getTime();
+      const startOfTodayISO = today.toISOString(); // For Supabase DB Query
+      
+      const lastWeek = new Date(today);
+      lastWeek.setDate(lastWeek.getDate() - 7);
+      const startOfWeekMs = lastWeek.getTime();
+      const startOfWeekISO = lastWeek.toISOString(); // For Supabase DB Query
+
+      // 2. Fetch Data from Supabase
+      const [{ data: oData }, { data: uData }, { data: cData }] = await Promise.all([
+        supabase.from('orders').select('userid, createdAt').gte('createdAt', startOfWeekISO),
+        supabase.from('users').select('created_at, meta'),
+        supabase.from('cart_items').select('user_id, updated_at').gte('updated_at', startOfWeekISO)
+      ]);
+
+      // 3. Initialize Counters
+      let tActive = 0, tNew = 0;
+      let wActive = 0, wNew = 0;
+      
+      let tBuyers = new Set();
+      let wBuyers = new Set();
+      
+      let tOrders = 0, wOrders = 0;
+      
+      let tCarts = new Set();
+      let wCarts = new Set();
+
+      // 4. Process Orders & Buyers
+      (oData || []).forEach(o => {
+        wOrders++;
+        wBuyers.add(o.userid);
+        
+        // Convert DB time string to milliseconds
+        const orderTime = new Date(o.createdAt).getTime();
+        if (orderTime >= startOfTodayMs) {
+          tOrders++;
+          tBuyers.add(o.userid);
+        }
+      });
+
+      // 5. Process Unique Cart Updates (Truck)
+      (cData || []).forEach(c => {
+        wCarts.add(c.user_id);
+        
+        // Convert DB time string to milliseconds
+        const cartTime = new Date(c.updated_at).getTime();
+        if (cartTime >= startOfTodayMs) {
+          tCarts.add(c.user_id);
+        }
+      });
+
+      // 6. Process Users (Active & New)
+      (uData || []).forEach(u => {
+        // --- A. NEW USERS LOGIC ---
+        if (u.created_at) {
+          const createdTime = new Date(u.created_at).getTime(); 
+          if (createdTime >= startOfWeekMs) wNew++;
+          if (createdTime >= startOfTodayMs) tNew++;
+        }
+
+        // --- B. ACTIVE USERS LOGIC ---
+        let metaObj = {};
+        try {
+          metaObj = typeof u.meta === 'string' ? JSON.parse(u.meta) : (u.meta || {});
+        } catch(e) {}
+
+        if (metaObj.lastSeen) {
+          const lastSeenTime = new Date(metaObj.lastSeen).getTime();
+          if (lastSeenTime >= startOfWeekMs) wActive++;
+          if (lastSeenTime >= startOfTodayMs) tActive++;
+        }
+      });
+
+      // 7. Update the State
+      setDashStats({
+        today: { 
+          active: tActive, 
+          new: tNew, 
+          buyers: tBuyers.size, 
+          orders: tOrders, 
+          carts: tCarts.size 
+        },
+        week: { 
+          active: wActive, 
+          new: wNew, 
+          buyers: wBuyers.size, 
+          orders: wOrders, 
+          carts: wCarts.size 
+        }
+      });
+      
+    } catch(e) { 
+      console.error("Stats Error:", e); 
+    }
+  };
+
   useEffect(() => {
     const savedUser = localStorage.getItem('nayika_naari_user'); 
     if (savedUser) {
@@ -119,13 +228,14 @@ export default function SellerDashboard() {
     }
   }, [router]);
 
-  useEffect(() => {
+useEffect(() => {
     if (currentUser) {
-      fetchCategories();
-      fetchMyProducts();
-      fetchOrders();
+      if (view === 'dashboard') { fetchMyProducts(); fetchOrders(); fetchDashboardStats(); }
+      else if (view === 'orders') { fetchOrders(); }
+      else if (view === 'products') { fetchMyProducts(); }
+      else if (view === 'users') { fetchUsersData(); }
     }
-  }, [currentUser]);
+  }, [currentUser, view]); // 🌟 'view' add karne se tab change par refresh hoga
 
   useEffect(() => {
     if (currentUser && view === 'users') {
@@ -721,6 +831,55 @@ const fetchMyProducts = async () => {
                  <h2 className="text-2xl font-black text-gray-900">{orders.length}</h2>
                  <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Total Orders</p>
               </div>
+              
+            </div>
+            {/* 🌟 NAYA: Analytics Card */}
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden mt-6">
+              <div className="bg-gray-50 p-3 border-b border-gray-100 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <TrendingUp size={16} className="text-blue-600" />
+                  <h3 className="font-black text-xs text-gray-800 uppercase tracking-widest">Growth Metrics</h3>
+                </div>
+                <button onClick={fetchDashboardStats} className="text-[9px] font-bold text-gray-400 hover:text-blue-600 flex items-center gap-1 active:scale-95"><Activity size={12}/> REFRESH</button>
+              </div>
+              <div className="p-0">
+                 <table className="w-full text-left text-sm">
+                    <thead>
+                      <tr className="bg-gray-50/30 text-[9px] text-gray-400 uppercase tracking-widest">
+                        <th className="p-3 font-bold">Metric</th>
+                        <th className="p-3 font-bold text-center border-l border-gray-100 bg-blue-50/30 text-blue-600">Today</th>
+                        <th className="p-3 font-bold text-center border-l border-gray-100">7 Days</th>
+                      </tr>
+                    </thead>
+                    <tbody className="font-semibold text-gray-700">
+                      <tr className="border-t border-gray-100 hover:bg-gray-50 transition-colors">
+                        <td className="p-3 text-[11px] flex items-center gap-2"><Activity size={14} className="text-green-500"/> Active Users</td>
+                        <td className="p-3 text-center border-l border-gray-100 text-gray-900 font-black bg-blue-50/30">{dashStats.today.active}</td>
+                        <td className="p-3 text-center border-l border-gray-100">{dashStats.week.active}</td>
+                      </tr>
+                      <tr className="border-t border-gray-100 hover:bg-gray-50 transition-colors">
+                        <td className="p-3 text-[11px] flex items-center gap-2"><UserPlus size={14} className="text-purple-500"/> New Users</td>
+                        <td className="p-3 text-center border-l border-gray-100 text-gray-900 font-black bg-blue-50/30">{dashStats.today.new}</td>
+                        <td className="p-3 text-center border-l border-gray-100">{dashStats.week.new}</td>
+                      </tr>
+                      <tr className="border-t border-gray-100 hover:bg-gray-50 transition-colors">
+                        <td className="p-3 text-[11px] flex items-center gap-2"><ShoppingBag size={14} className="text-orange-500"/> New Buyers</td>
+                        <td className="p-3 text-center border-l border-gray-100 text-gray-900 font-black bg-blue-50/30">{dashStats.today.buyers}</td>
+                        <td className="p-3 text-center border-l border-gray-100">{dashStats.week.buyers}</td>
+                      </tr>
+                      <tr className="border-t border-gray-100 hover:bg-gray-50 transition-colors">
+                        <td className="p-3 text-[11px] flex items-center gap-2"><ClipboardList size={14} className="text-blue-500"/> Orders Placed</td>
+                        <td className="p-3 text-center border-l border-gray-100 text-gray-900 font-black bg-blue-50/30">{dashStats.today.orders}</td>
+                        <td className="p-3 text-center border-l border-gray-100">{dashStats.week.orders}</td>
+                      </tr>
+                      <tr className="border-t border-gray-100 hover:bg-gray-50 transition-colors">
+                        <td className="p-3 text-[11px] flex items-center gap-2"><ShoppingCart size={14} className="text-pink-500"/> Truck Updated</td>
+                        <td className="p-3 text-center border-l border-gray-100 text-gray-900 font-black bg-blue-50/30">{dashStats.today.carts}</td>
+                        <td className="p-3 text-center border-l border-gray-100">{dashStats.week.carts}</td>
+                      </tr>
+                    </tbody>
+                 </table>
+              </div>
             </div>
 
             <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden mt-6">
@@ -735,7 +894,7 @@ const fetchMyProducts = async () => {
         {/* ── 🌟 VIEW: USERS LISTING ── */}
         {view === 'users' && (
           <div className="animate-in fade-in duration-300 flex flex-col h-full bg-[#F8F9FA]">
-            <div className="p-3 bg-white border-b border-gray-200 sticky top-0 z-10 flex items-center gap-3">
+            <div className="p-3 bg-white border-b border-gray-200 flex flex-col gap-3 sticky top-0 z-30 shadow-sm">
               {/* 🌟 NAYA: Users Count Badge */}
               <div className="flex flex-col items-center justify-center bg-blue-50 text-blue-700 px-3 py-2 rounded-xl border border-blue-100 shrink-0 shadow-sm">
                  <span className="text-sm font-black leading-none">{filteredUsers.length}</span>
@@ -758,9 +917,30 @@ const fetchMyProducts = async () => {
                            {u.name ? u.name.charAt(0) : 'U'}
                         </div>
                         <div>
-                          <h3 className="font-black text-gray-900 text-[15px]">{u.name}</h3>
-                          <p className="text-[10px] font-bold text-gray-500 mt-0.5"><MapPin size={10} className="inline mr-0.5 mb-0.5"/> {u.city || 'N/A'}, {u.state || 'N/A'}</p>
-                        </div>
+  <h3 className="font-black text-gray-900 text-[15px]">{u.name}</h3>
+  
+  <p className="text-[10px] font-bold text-gray-500 mt-0.5">
+    <MapPin size={10} className="inline mr-0.5 mb-0.5"/> {u.city || 'N/A'}, {u.state || 'N/A'}
+  </p>
+  
+  {/* 🌟 NAYA: Password Copy Block */}
+  {u.password && (
+    <div 
+      onClick={(e) => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(u.password);
+        showToast("Password Copied! 🔐");
+      }}
+      className="flex items-center gap-2 mt-2 bg-red-50/60 px-2 py-1.5 rounded-md border border-red-100 cursor-pointer hover:bg-red-50 active:scale-[0.98] transition-all w-fit"
+    >
+      <Lock size={10} className="text-red-500" />
+      <span className="text-[10px] font-bold text-gray-600">
+        Pass: <span className="font-mono text-red-700">{u.password}</span>
+      </span>
+      <Copy size={12} className="text-red-400 ml-1" />
+    </div>
+  )}
+</div>
                       </div>
                       <div className="flex gap-2">
                         <a href={`tel:+91${u.phone}`} className="w-8 h-8 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center active:scale-95 transition-transform"><Phone size={14}/></a>
@@ -866,7 +1046,7 @@ const fetchMyProducts = async () => {
 
         {view === 'products' && (
           <div className="animate-in fade-in duration-300 flex flex-col h-full bg-[#F8F9FA]">
-            <div className="p-3 bg-white border-b border-gray-200 sticky top-0 z-10 flex flex-col gap-3">
+            <div className="p-3 bg-white border-b border-gray-200 flex flex-col gap-3 sticky top-0 z-30 shadow-sm">
               <div className="flex items-center gap-3 w-full">
                 {/* 🌟 Listings Count Badge */}
                 <div className="flex flex-col items-center justify-center bg-purple-50 text-purple-700 px-3 py-2 rounded-xl border border-purple-200 shrink-0 shadow-sm">
@@ -943,7 +1123,7 @@ const fetchMyProducts = async () => {
             
             {/* 🌟 NAYA: Filter Pills & Search Section */}
             {/* 🌟 NAYA: Filter Pills & Search Section with Order Count */}
-            <div className="p-3 bg-white border-b border-gray-200 sticky top-0 z-10 flex flex-col gap-3">
+            <div className="p-3 bg-white border-b border-gray-200 flex flex-col gap-3 sticky top-0 z-30 shadow-sm">
               <div className="flex items-center gap-3 w-full">
                 {/* 🌟 NAYA: Orders Count Badge */}
                 <div className="flex flex-col items-center justify-center bg-[#E5F7ED] text-[#008A00] px-3 py-2 rounded-xl border border-green-200 shrink-0 shadow-sm">
@@ -1056,7 +1236,13 @@ const fetchMyProducts = async () => {
                   </select>
                 </div>
               </div>
-              <div className="text-xs font-semibold text-gray-600 mt-3 bg-gray-50 p-3 rounded-xl border border-gray-100">
+              <div 
+              onClick={() => {
+                  const copyText = `Name: ${selectedOrder.buyerName}\nPhone: ${selectedOrder.phone}\nAddress: ${selectedOrder.address}, ${selectedOrder.city}, ${selectedOrder.state} - ${selectedOrder.pincode}`;
+                  navigator.clipboard.writeText(copyText);
+                  showToast("Address Copied! ✅");
+                }}
+              className="text-xs font-semibold text-gray-600 mt-3 bg-gray-50 p-3 rounded-xl border border-gray-100">
                 <p className="flex items-center gap-2"><User size={14}/> {selectedOrder.buyerName}</p>
                 <p className="flex items-center gap-2 mt-1.5"><MapPin size={14}/> {selectedOrder.address}, {selectedOrder.city}, {selectedOrder.state} - {selectedOrder.pincode}</p>
                 

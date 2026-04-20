@@ -975,7 +975,28 @@ if (view === 'splash') return (
         {view === 'login_password' && (
           <div className="space-y-4 animate-in slide-in-from-right-4 duration-300">
             <div className="flex justify-between items-center p-4 bg-gray-50 border border-gray-200"><span className="font-bold text-gray-600">+91 {authPhone}</span><button onClick={() => { setView('auth_phone'); setAuthPassword(''); }} style={{color: theme.primary}} className="text-xs font-bold underline">Change</button></div>
-            <input type="password" placeholder="Enter Password" className="input-field" value={authPassword} onChange={e => setAuthPassword(e.target.value)} />
+            <div className="flex items-center gap-2 w-full">
+  {/* Password Input Area */}
+  <input
+    type="password"
+    placeholder="Enter Password"
+    /* 👇 Tumhare purane input mein agar koi id, name ya onChange tha, toh wo yahan wapas daal dena. Agar nahi tha toh isko aise hi rehne do. */
+    className="flex-1 w-full p-3 rounded-xl border border-gray-100 focus:outline-none focus:border-pink-500 transition-colors bg-white shadow-sm"
+  />
+  
+  {/* Request Password WhatsApp Button */}
+  <button
+    type="button"
+    onClick={() => {
+      // ⚠️ DHYAN DEIN: Agar error aaye ki 'phone is not defined', toh yahan 'phone' ki jagah us variable ka naam likhna jisme tumhara number save hai (jaise 'mobile' ya 'userPhone').
+      const message = encodeURIComponent(`Requesting old password for number: ${phone}, Please share`);
+      window.open(`https://wa.me/919808332207?text=${message}`, "_blank");
+    }}
+    className="bg-gray-500 hover:bg-gray-600 text-white px-4 py-3 rounded-xl text-[12px] font-bold whitespace-nowrap shadow-sm active:scale-95 transition-all flex items-center gap-1"
+  >
+    Forgot Password
+  </button>
+</div>
           </div>
         )}
        {view === 'signup' && (
