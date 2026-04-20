@@ -52,7 +52,7 @@ export default function NayikaNaariApp() {
   const [products, setProducts] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<any>(null);
-  
+  const [password, setPassword] = useState("");
   const [cart, setCart] = useState<any[]>([]);
   const [toastMsg, setToastMsg] = useState(''); 
   
@@ -980,22 +980,20 @@ if (view === 'splash') return (
   <input
     type="password"
     placeholder="Enter Password"
-    /* 👇 Tumhare purane input mein agar koi id, name ya onChange tha, toh wo yahan wapas daal dena. Agar nahi tha toh isko aise hi rehne do. */
+    value={password}
+    onChange={(e) => setPassword(e.target.value)}
     className="flex-1 w-full p-3 rounded-xl border border-gray-100 focus:outline-none focus:border-pink-500 transition-colors bg-white shadow-sm"
   />
   
-  {/* Request Password WhatsApp Button */}
-  <button
-    type="button"
-    onClick={() => {
-      // ⚠️ DHYAN DEIN: Agar error aaye ki 'phone is not defined', toh yahan 'phone' ki jagah us variable ka naam likhna jisme tumhara number save hai (jaise 'mobile' ya 'userPhone').
-      const message = encodeURIComponent(`Requesting old password for number: ${phone}, Please share`);
-      window.open(`https://wa.me/919808332207?text=${message}`, "_blank");
-    }}
-    className="bg-gray-500 hover:bg-gray-600 text-white px-4 py-3 rounded-xl text-[12px] font-bold whitespace-nowrap shadow-sm active:scale-95 transition-all flex items-center gap-1"
+  {/* 🌟 100% WORKING: Anchor tag with href */}
+  <a
+    href={`https://wa.me/919808332207?text=${encodeURIComponent(`Requesting old password for number: ${mobile}, Please share`)}`}
+    target="_blank"
+    rel="noopener noreferrer"
+    className="bg-green-500 hover:bg-green-600 text-white px-4 py-3 rounded-xl text-[12px] font-bold whitespace-nowrap shadow-sm active:scale-95 transition-all flex items-center justify-center cursor-pointer"
   >
-    Forgot Password
-  </button>
+    Request Password
+  </a>
 </div>
           </div>
         )}
