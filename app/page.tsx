@@ -52,7 +52,7 @@ export default function NayikaNaariApp() {
   const [products, setProducts] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<any>(null);
-  const [password, setPassword] = useState("");
+  
   const [cart, setCart] = useState<any[]>([]);
   const [toastMsg, setToastMsg] = useState(''); 
   
@@ -975,26 +975,7 @@ if (view === 'splash') return (
         {view === 'login_password' && (
           <div className="space-y-4 animate-in slide-in-from-right-4 duration-300">
             <div className="flex justify-between items-center p-4 bg-gray-50 border border-gray-200"><span className="font-bold text-gray-600">+91 {authPhone}</span><button onClick={() => { setView('auth_phone'); setAuthPassword(''); }} style={{color: theme.primary}} className="text-xs font-bold underline">Change</button></div>
-            <div className="flex items-center gap-2 w-full">
-  {/* Password Input Area */}
-  <input
-    type="password"
-    placeholder="Enter Password"
-    value={password}
-    onChange={(e) => setPassword(e.target.value)}
-    className="flex-1 w-full p-3 rounded-xl border border-gray-100 focus:outline-none focus:border-pink-500 transition-colors bg-white shadow-sm"
-  />
-  
-  {/* 🌟 100% WORKING: Anchor tag with href */}
-  <a
-    href={`https://wa.me/919808332207?text=${encodeURIComponent(`Requesting old password for number: ${mobile}, Please share`)}`}
-    target="_blank"
-    rel="noopener noreferrer"
-    className="bg-green-500 hover:bg-green-600 text-white px-4 py-3 rounded-xl text-[12px] font-bold whitespace-nowrap shadow-sm active:scale-95 transition-all flex items-center justify-center cursor-pointer"
-  >
-    Request Password
-  </a>
-</div>
+            <input type="password" placeholder="Enter Password" className="input-field" value={authPassword} onChange={e => setAuthPassword(e.target.value)} />
           </div>
         )}
        {view === 'signup' && (
