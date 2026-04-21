@@ -975,7 +975,25 @@ if (view === 'splash') return (
         {view === 'login_password' && (
           <div className="space-y-4 animate-in slide-in-from-right-4 duration-300">
             <div className="flex justify-between items-center p-4 bg-gray-50 border border-gray-200"><span className="font-bold text-gray-600">+91 {authPhone}</span><button onClick={() => { setView('auth_phone'); setAuthPassword(''); }} style={{color: theme.primary}} className="text-xs font-bold underline">Change</button></div>
-            <input type="password" placeholder="Enter Password" className="input-field" value={authPassword} onChange={e => setAuthPassword(e.target.value)} />
+            {/* 🌟 NAYA: Password Input with Forgot Password CTA */}
+            <div className="flex items-center gap-3 w-full">
+              <input 
+                type="password" 
+                placeholder="Enter Password" 
+                className="input-field" 
+                value={authPassword} 
+                onChange={e => setAuthPassword(e.target.value)} 
+              />
+              <a
+                href={`https://wa.me/919808332207?text=${encodeURIComponent(`${authPhone} - Please share my password`)}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs font-bold whitespace-nowrap cursor-pointer hover:opacity-80 active:scale-95"
+                style={{ color: theme.primary }}
+              >
+                Forgot Password?
+              </a>
+            </div>
           </div>
         )}
        {view === 'signup' && (
