@@ -1390,7 +1390,7 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
 
         {view === 'plp' && (
           <div className="animate-in fade-in duration-500 bg-gray-100 flex-1 flex flex-col">
-            <div className="flex overflow-x-auto gap-2 px-3 py-3 bg-white scrollbar-hide border-b border-gray-200 shrink-0">
+           <div className="flex overflow-x-auto gap-2 px-3 py-3 bg-white scrollbar-hide border-b border-gray-200 shrink-0 sticky top-0 z-30">
               {['All', ...new Set(products.map(p => p.subcategory))].map(sub => (
                 <button key={sub} onClick={() => setSelectedSubcategory(sub)} className={`whitespace-nowrap px-4 py-1.5 text-xs font-bold border transition-all rounded-full ${selectedSubcategory === sub ? 'text-white' : 'border-gray-200 text-gray-600 bg-white'}`} style={selectedSubcategory === sub ? {backgroundColor: theme.primary, borderColor: theme.primary} : {}}>{sub}</button>
               ))}
@@ -1539,7 +1539,16 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
               </div>
 
               <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[450px] bg-white p-3 border-t border-gray-200 z-50 shadow-[0_-10px_20px_rgba(0,0,0,0.05)]">
-                 <button onClick={addToTruck} disabled={isAdding} style={{backgroundColor: theme.primary}} className="w-full text-white py-3.5 rounded font-bold uppercase tracking-widest text-[12px] shadow-sm flex items-center justify-center gap-2 active:scale-95 transition-transform">                   {isAdding ? <Loader2 size={18} className="animate-spin"/> : <ShoppingCart size={18} />}
+                 <button 
+                   onClick={addToTruck} 
+                   disabled={isAdding} 
+                   className="w-full text-white py-4 font-black uppercase tracking-widest text-[13px] flex items-center justify-center gap-3 active:scale-95 transition-all btn-premium glow-effect"
+                 >
+                   {isAdding ? (
+                     <Loader2 size={22} className="animate-spin"/>
+                   ) : (
+                     <ShoppingCart size={22} className="icon-heartbeat drop-shadow-md" />
+                   )}
                    {currentTotal > 0 ? `ADD TO CART (₹ ${currentTotal})` : 'ADD TO CART'}
                  </button>
               </div>
@@ -2139,27 +2148,30 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
                   })}
                 </div>
               </div>
-              <div className="bg-white p-4 border-t border-gray-200 shrink-0 shadow-[0_-10px_20px_rgba(0,0,0,0.05)]">
-                 <button onClick={async () => {
-                    const newItems = processTruckUpdate(editingGroup.productRef);
-                    const filteredCart = cart.filter(item => item.id !== editingGroup.id);
-                    const updatedCart = [...filteredCart, ...newItems];
-                    setCart(updatedCart);
-                    
-                    if (currentUser) {
-                       await supabase.from('cart_items').delete().match({ user_id: currentUser.id, product_id: editingGroup.id, status: 0 });
-                       
-                       const dbUpsertData = newItems.map((item: any) => ({
-                         user_id: currentUser.id, product_id: item.id, size: item.selectedSize,
-                         qty: item.qtyPieces, status: 0, seller: item.seller || null, updated_at: getLocalTimestamp()
-                       }));
-                       if(dbUpsertData.length > 0) await supabase.from('cart_items').upsert(dbUpsertData, { onConflict: 'user_id, product_id, size, status' });
-                    } else {
-                       localStorage.setItem('nayika_naari_guest_cart', JSON.stringify(updatedCart));
-                    }
-                    setActiveSheet('none');
-                    showToast("Cart Updated");
-                 }} style={{backgroundColor: theme.primary}} className="w-full text-white py-3.5 rounded font-bold uppercase tracking-widest text-[12px] shadow-sm active:scale-95 transition-transform">
+             <div className="bg-white p-4 border-t border-gray-200 shrink-0 shadow-[0_-10px_20px_rgba(0,0,0,0.05)]">
+                 <button 
+                   onClick={async () => {
+                      const newItems = processTruckUpdate(editingGroup.productRef);
+                      const filteredCart = cart.filter(item => item.id !== editingGroup.id);
+                      const updatedCart = [...filteredCart, ...newItems];
+                      setCart(updatedCart);
+                      
+                      if (currentUser) {
+                         await supabase.from('cart_items').delete().match({ user_id: currentUser.id, product_id: editingGroup.id, status: 0 });
+                         const dbUpsertData = newItems.map((item: any) => ({
+                           user_id: currentUser.id, product_id: item.id, size: item.selectedSize,
+                           qty: item.qtyPieces, status: 0, seller: item.seller || null, updated_at: getLocalTimestamp()
+                         }));
+                         if(dbUpsertData.length > 0) await supabase.from('cart_items').upsert(dbUpsertData, { onConflict: 'user_id, product_id, size, status' });
+                      } else {
+                         localStorage.setItem('nayika_naari_guest_cart', JSON.stringify(updatedCart));
+                      }
+                      setActiveSheet('none');
+                      showToast("Cart Updated");
+                   }} 
+                   className="w-full text-white py-4 font-black uppercase tracking-widest text-[13px] active:scale-95 transition-all btn-premium glow-effect flex justify-center items-center gap-2"
+                 >
+                   <ShoppingCart size={22} className="icon-heartbeat drop-shadow-md" />
                    UPDATE SIZES (₹{editSheetTotal})
                  </button>
               </div>
@@ -2237,7 +2249,7 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
         </nav>
       )}
 
-      {/* Global CSS for standard Inputs */}
+      {/* Global CSS for standard Inputs and Premium Animations */}
       <style dangerouslySetWidth="100%" dangerouslySetHeight="100%" jsx>{`
         .input-field {
           width: 100%;
@@ -2251,7 +2263,40 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
         .input-field:focus {
           border-color: #FF3F6C;
         }
-      `}</style>
+
+        /* 🌟 PREMIUM 1: Liquid Gradient Flow */
+        @keyframes liquidFlow {
+          0% { background-position: 0% 50%; }
+          50% { background-position: 100% 50%; }
+          100% { background-position: 0% 50%; }
+        }
+        .btn-premium {
+          background: linear-gradient(-45deg, #FF3F6C, #FF758C, #E11B4C, #FF829D);
+          background-size: 300% 300%;
+          animation: liquidFlow 4s ease infinite;
+        }
+
+        /* 🌟 PREMIUM 2: Breathing Shadow (Glow) */
+        @keyframes breatheShadow {
+          0%, 100% { box-shadow: 0 5px 15px rgba(255, 63, 108, 0.3); }
+          50% { box-shadow: 0 15px 25px rgba(255, 63, 108, 0.6); transform: translateY(-1px); }
+        }
+        .glow-effect {
+          animation: breatheShadow 2.5s ease-in-out infinite;
+        }
+
+        /* 🌟 PREMIUM 3: Heartbeat Cart Icon */
+        @keyframes heartbeat {
+          0%, 100% { transform: scale(1); }
+          15% { transform: scale(1.15) rotate(-5deg); }
+          30% { transform: scale(1); }
+          45% { transform: scale(1.15) rotate(5deg); }
+          60% { transform: scale(1); }
+        }
+        .icon-heartbeat {
+          animation: heartbeat 2s infinite;
+        }
+      `}</style>        
       
     </div>
   );
