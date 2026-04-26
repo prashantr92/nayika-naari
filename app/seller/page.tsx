@@ -178,6 +178,9 @@ export default function SellerDashboard() {
 
   useEffect(() => {
     if (currentUser) {
+      // 🌟 FIX: Categories ko fetch karne ka function call kar diya hai
+      fetchCategories(); 
+      
       if (view === 'dashboard') { fetchMyProducts(); fetchOrders(); fetchDashboardStats(); }
       else if (view === 'orders') { fetchOrders(); }
       else if (view === 'products') { fetchMyProducts(); }
@@ -844,7 +847,7 @@ export default function SellerDashboard() {
                     <th className="py-2 px-1 font-bold">Item</th>
                     <th className="py-2 px-1 font-bold text-center">Size</th>
                     <th className="py-2 px-1 font-bold text-right">MRP</th>
-                    <th className="py-2 px-1 font-bold text-right">Rate ({selectedOrder.discount_percent || 0}% OFF)</th>
+                    <th className="py-2 px-1 font-bold text-right">Rate</th>
                     <th className="py-2 px-1 font-bold text-center">Qty</th>
                     <th className="py-2 px-1 font-bold text-right">Amount</th>
                   </tr>
