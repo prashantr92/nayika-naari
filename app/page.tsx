@@ -65,8 +65,16 @@ export default function NayikaNaariApp() {
   const [sizeQuantities, setSizeQuantities] = useState<Record<string, number>>({});
   const [currentImgIndex, setCurrentImgIndex] = useState(0);
   const [isAdding, setIsAdding] = useState(false);
-  const [selectedSubcategory, setSelectedSubcategory] = useState<string>('All');
+ const [selectedSubcategory, setSelectedSubcategory] = useState<string>('All'); // Kept for safe fallback
   const [activeSheet, setActiveSheet] = useState<'none' | 'address' | 'sizes'>('none');
+
+  // 🌟 NAYA: Filter & Sort States
+  const [quickFilter, setQuickFilter] = useState('All');
+  const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false);
+  const [activeFilterTab, setActiveFilterTab] = useState('Price');
+  const [appliedFilters, setAppliedFilters] = useState({ subcategories: [], sellers: [], priceRanges: [] });
+  const [tempFilters, setTempFilters] = useState({ subcategories: [], sellers: [], priceRanges: [] });
+  const [orderedProductIds, setOrderedProductIds] = useState<Set<number>>(new Set());
   const [editingGroup, setEditingGroup] = useState<any>(null);
   const [paymentScreenshot, setPaymentScreenshot] = useState<File | null>(null);
   const [isPlacingOrder, setIsPlacingOrder] = useState(false);
@@ -83,7 +91,7 @@ export default function NayikaNaariApp() {
   const [isCancelling, setIsCancelling] = useState(false);
   const [isUploadingScreenshot, setIsUploadingScreenshot] = useState(false);
 
-  // 🌟 LOCAL NOTIFICATION STATES (NO DB)
+  // 🌟 LOCAL NOTIFICATION STATES
   const [localNotifs, setLocalNotifs] = useState<any[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
 
@@ -94,12 +102,15 @@ export default function NayikaNaariApp() {
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [showInstallBanner, setShowInstallBanner] = useState(false);
 
+  // 🌟 NEW MULTI-SELLER STATES
+  const [activeCartSeller, setActiveCartSeller] = useState<string | null>(null);
+  const [sellerMovs, setSellerMovs] = useState<Record<string, number>>({});
+  const [isSellerSheetOpen, setIsSellerSheetOpen] = useState(false);
+
   useEffect(() => {
-    // Check if device is iOS
     const checkIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
     setIsIOS(checkIOS);
 
-    // Check if App is already installed (Standalone mode)
     const isStandalone = window.matchMedia('(display-mode: standalone)').matches || (window.navigator as any).standalone === true;
     if (isStandalone) setIsAppInstalled(true);
 
@@ -108,14 +119,12 @@ export default function NayikaNaariApp() {
       showToast("App Installed Successfully!");
     });
     
-    // Load Local Notifications & Unread Count
     const savedNotifs = localStorage.getItem('nayika_naari_notifs');
     if (savedNotifs) setLocalNotifs(JSON.parse(savedNotifs));
     const unread = localStorage.getItem('nayika_naari_unread');
     if (unread) setUnreadCount(Number(unread));
   }, []);
 
-  // 🌟 BACKGROUND TRACKER (Device & Last Seen)
   useEffect(() => {
     if (currentUser && currentUser.id) {
       const updateTracking = async () => {
@@ -132,7 +141,7 @@ export default function NayikaNaariApp() {
         } catch (e) { console.error("Tracking error", e); }
       };
       
-      updateTracking(); // App open hote hi track karo
+      updateTracking();
 
       let lastUpdate = Date.now();
       const handleInteract = () => {
@@ -148,7 +157,6 @@ export default function NayikaNaariApp() {
     }
   }, [currentUser?.id]);
 
-  // 🌟 ONESIGNAL LOGIC (With Local Storage Push Listener)
   useEffect(() => {
     if (typeof window !== 'undefined' && !window.OneSignal) {
       const script = document.createElement('script');
@@ -167,7 +175,6 @@ export default function NayikaNaariApp() {
         const optedIn = await OneSignal.User.PushSubscription.optedIn;
         setIsPushEnabled(optedIn);
 
-        // 🌟 FOREGROUND LISTENER: Catch incoming notifications and save locally
         OneSignal.Notifications.addEventListener('foregroundWillDisplay', (event: any) => {
           const notif = event.notification;
           const newAlert = {
@@ -210,29 +217,22 @@ export default function NayikaNaariApp() {
     }
   }, [currentUser]);
 
-  // --- REGISTER SERVICE WORKER FOR PWA ---
-useEffect(() => {
-  if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js').then((reg) => {
-      
-      // Har 60 seconds mein check karo naya update hai kya
-      setInterval(() => reg.update(), 60000);
-
-      // Naya SW available hote hi turant activate karo
-      reg.addEventListener('updatefound', () => {
-        const newSW = reg.installing;
-        if (!newSW) return;
-        newSW.addEventListener('statechange', () => {
-          if (newSW.state === 'installed' && navigator.serviceWorker.controller) {
-            // Naya version available — force activate karo
-            newSW.postMessage('SKIP_WAITING');
-          }
-        });
-    });
-
-    }).catch(err => console.log('SW failed:', err));
-  } // 🌟 MISSING: if condition close
-}, []); // 🌟 MISSING: useEffect close
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').then((reg) => {
+        setInterval(() => reg.update(), 60000);
+        reg.addEventListener('updatefound', () => {
+          const newSW = reg.installing;
+          if (!newSW) return;
+          newSW.addEventListener('statechange', () => {
+            if (newSW.state === 'installed' && navigator.serviceWorker.controller) {
+              newSW.postMessage('SKIP_WAITING');
+            }
+          });
+      });
+      }).catch(err => console.log('SW failed:', err));
+    } 
+  }, []); 
 
   useEffect(() => {
     const handleBeforeInstallPrompt = (e: any) => {
@@ -263,17 +263,12 @@ useEffect(() => {
 
     try {
       const OneSignal = (window as any).OneSignal;
-      
-      if (!OneSignal) { 
-        showToast("Please wait a moment while the notification service loads."); 
-        return; 
-      }
+      if (!OneSignal) { showToast("Please wait a moment while the notification service loads."); return; }
 
       await OneSignal.Notifications.requestPermission();
 
       if (window.Notification && Notification.permission === "granted") {
         setIsPushEnabled(true);
-        
         setTimeout(async () => {
           const subId = await OneSignal.User.PushSubscription.id;
           if (subId && currentUser) {
@@ -285,12 +280,9 @@ useEffect(() => {
       } else {
         showToast("Notifications blocked! Please check browser settings.");
       }
-    } catch (e) { 
-      console.error("Push enable error:", e); 
-    }
+    } catch (e) { console.error("Push enable error:", e); }
   };
 
-  // 🌟 MOBILE HARDWARE BACK BUTTON FIX
   useEffect(() => {
     window.history.pushState(null, '', window.location.href);
 
@@ -300,6 +292,9 @@ useEffect(() => {
         window.history.pushState(null, '', window.location.href);
       } else if (activeSheet !== 'none') {
         setActiveSheet('none');
+        window.history.pushState(null, '', window.location.href);
+      } else if (isSellerSheetOpen) {
+        setIsSellerSheetOpen(false);
         window.history.pushState(null, '', window.location.href);
       } else if (view === 'pdp' || view === 'cart' || view === 'orders' || view === 'profile' || view === 'notifications') {
         setView('plp');
@@ -317,7 +312,7 @@ useEffect(() => {
 
     window.addEventListener('popstate', handleBackButton);
     return () => window.removeEventListener('popstate', handleBackButton);
-  }, [view, activeSheet, zoomOverlay]);
+  }, [view, activeSheet, zoomOverlay, isSellerSheetOpen]);
 
   const showToast = (msg: string) => {
     setToastMsg(msg);
@@ -344,7 +339,8 @@ useEffect(() => {
           unitPrice: p.cost + extraPrice,
           totalLineCost: item.qty * (p.cost + extraPrice),
           displayImg: imgData.images[0] || '',
-          seller: item.seller || p.seller
+          seller: item.seller || p.seller,
+          updated_at: item.updated_at
         };
       });
       setCart(rebuiltCart);
@@ -368,7 +364,6 @@ useEffect(() => {
     }
   };
 
-  // 🌟 HELPER: Fetch Specific Order (Deep Linking ke liye)
   const handleDirectOrderLink = async (orderId: string, userId: number) => {
     setLoading(true);
     const { data: order } = await supabase.from('orders').select('*').eq('id', orderId).single();
@@ -393,7 +388,6 @@ useEffect(() => {
           setAddressData({ name: parsedUser.name, mobile: parsedUser.phone, pincode: parsedUser.pincode, address: parsedUser.address, city: parsedUser.city, state: parsedUser.state });
           loadDBCart(parsedUser.id);
           
-          // 🌟 DEEP LINKING PARSER: External Push URL check
           const urlParams = new URLSearchParams(window.location.search);
           const targetView = urlParams.get('view');
           const targetOrderId = urlParams.get('order_id');
@@ -412,15 +406,92 @@ useEffect(() => {
     }
   }, [view]);
 
-  const processTruckUpdate = (baseProduct: any) => {
+  // 🌟 SELLER CART LOGIC
+  const cartSellers = useMemo(() => {
+    const sellersMap = new Map();
+    cart.forEach(item => {
+        const seller = item.seller || 'Nayika Naari';
+        if (!sellersMap.has(seller)) {
+            sellersMap.set(seller, { name: seller, latest: item.updated_at || '' });
+        } else {
+            if (item.updated_at > sellersMap.get(seller).latest) {
+                sellersMap.set(seller, { name: seller, latest: item.updated_at });
+            }
+        }
+    });
+    return Array.from(sellersMap.values()).sort((a, b) => b.latest.localeCompare(a.latest)).map(s => s.name);
+  }, [cart]);
+
+  useEffect(() => {
+      if (cartSellers.length > 0 && (!activeCartSeller || !cartSellers.includes(activeCartSeller))) {
+          setActiveCartSeller(cartSellers[0]);
+      } else if (cartSellers.length === 0) {
+          setActiveCartSeller(null);
+      }
+  }, [cartSellers, activeCartSeller]);
+
+  useEffect(() => {
+      const fetchMovs = async () => {
+          if (cartSellers.length > 0) {
+              const { data } = await supabase.from('users').select('name, mov').in('name', cartSellers);
+              const movs: Record<string, number> = {};
+              cartSellers.forEach(s => movs[s] = 2500); 
+              if (data) {
+                  data.forEach((u: any) => {
+                      movs[u.name] = u.mov !== null ? u.mov : 2500;
+                  });
+              }
+              setSellerMovs(movs);
+          }
+      };
+      fetchMovs();
+  }, [cartSellers]);
+
+  const activeCartItems = useMemo(() => {
+      return cart.filter(item => (item.seller || 'Nayika Naari') === activeCartSeller);
+  }, [cart, activeCartSeller]);
+
+  const groupedCart = useMemo(() => {
+    const groups: Record<number, any> = {};
+    activeCartItems.forEach(item => {
+      const meta = safeParseJSON(item.meta, {});
+      const sizesRaw = meta?.attributes?.available_sizes || {};
+      const isOOS = sizesRaw[item.selectedSize]?.is_active === false;
+
+      if (!groups[item.id]) groups[item.id] = { productRef: item, id: item.id, name: item.name, subcategory: item.subcategory, displayImg: item.displayImg, totalPrice: 0, totalPcs: 0, totalBoxes: 0, sizesMap: {}, oosSizes: [] };
+
+      groups[item.id].sizesMap[item.selectedSize] = item.qtyPieces;
+      
+      if (isOOS) {
+          groups[item.id].oosSizes.push(item.selectedSize);
+      } else {
+          groups[item.id].totalPcs += item.qtyPieces;
+          groups[item.id].totalBoxes += Math.ceil(item.qtyPieces / item.boxSize);
+          groups[item.id].totalPrice += item.totalLineCost;
+      }
+    });
+    return Object.values(groups);
+  }, [activeCartItems]);
+
+  const cartTotalAmount = groupedCart.reduce((a, b) => a + b.totalPrice, 0);
+  const minOrderVal = sellerMovs[activeCartSeller || 'Nayika Naari'] || 2500;
+  const isMovMet = cartTotalAmount >= minOrderVal;
+  const shippingCharge = 100;
+
+const processTruckUpdate = (baseProduct: any) => {
     const meta = safeParseJSON(baseProduct.meta, {});
     const sizesRaw = meta?.attributes?.available_sizes || {};
     const boxSize = meta?.attributes?.box_size?.[0] || 6;
     const imgData = safeParseJSON(baseProduct.img, { images: [] });
     const newItems: any[] = [];
     
+    // 🌟 FIX: timestamp wapas add kar diya hai
+    const timestamp = getLocalTimestamp();
+    
     for (const [size, qty] of Object.entries(sizeQuantities)) {
-      if (qty > 0) {
+      // 🌟 FIX: Do not process OOS sizes to save in cart
+      const isOOS = sizesRaw[size]?.is_active === false;
+      if (qty > 0 && !isOOS) {
         const extra = sizesRaw[size]?.extra_price || 0;
         newItems.push({
           ...baseProduct,
@@ -431,14 +502,14 @@ useEffect(() => {
           unitPrice: baseProduct.cost + extra,
           totalLineCost: qty * (baseProduct.cost + extra),
           displayImg: imgData.images[0] || '',
-          seller: baseProduct.seller || null
+          seller: baseProduct.seller || 'Nayika Naari',
+          updated_at: timestamp
         });
       }
     }
     return newItems;
   };
 
-// RESTORE SCROLL POSITION WHEN RETURNING TO PLP
   useEffect(() => {
     if (view === 'plp') {
       const scrollContainer = document.getElementById('main-scroll');
@@ -468,7 +539,6 @@ useEffect(() => {
     }
   }, [currentUser, view]);
 
-// 🌟 SMART AUTO-POPUP 
   useEffect(() => {
     if (currentUser && view === 'plp') { 
       const setupDone = localStorage.getItem("nayika_naari_setup_done");
@@ -483,7 +553,6 @@ useEffect(() => {
     }
   }, [view, currentUser, isAppInstalled]); 
 
-  // 🌟 AUTO-CLOSE WHEN BOTH ARE ENABLED
   useEffect(() => {
     if (isAppInstalled && isPushEnabled && showInstallBanner) {
       setTimeout(() => {
@@ -492,8 +561,36 @@ useEffect(() => {
       }, 1500); 
     }
   }, [isAppInstalled, isPushEnabled, showInstallBanner]);
+// 🌟 NAYA: Silently fetch ordered items for "Repeat Order" filter without freezing UI
+  useEffect(() => {
+    if (currentUser) {
+       supabase.from('orders').select('id').eq('userid', currentUser.id).then(({data: oData}) => {
+          if (oData && oData.length > 0) {
+             supabase.from('order_details').select('productid').in('orderid', oData.map(o => o.id))
+               .then(({data: dData}) => { if (dData) setOrderedProductIds(new Set(dData.map(d => d.productid))); });
+          }
+       });
+    }
+  }, [currentUser]);
 
-const fetchMyOrders = async () => {
+  // 🌟 NAYA: Generate dynamic filter options to prevent app crash and keep it optimized
+  const filterOptions = useMemo(() => {
+    const subcats = [...new Set(products.map(p => p.subcategory).filter(Boolean))];
+    const sellers = [...new Set(products.map(p => p.seller || 'Nayika Naari'))];
+    const maxPrice = products.length > 0 ? Math.max(...products.map(p => p.cost || 0)) : 0;
+    const upperLimit = Math.ceil(maxPrice / 50) * 50; 
+    const prices = [];
+    for (let i = 0; i < upperLimit; i += 50) { prices.push(`${i}-${i + 50}`); }
+    return { subcats, sellers, prices };
+  }, [products]);
+
+  const toggleTempFilter = (type: 'subcategories' | 'sellers' | 'priceRanges', value: string) => {
+     setTempFilters(prev => {
+        const arr = prev[type] as string[];
+        return { ...prev, [type]: arr.includes(value) ? arr.filter(item => item !== value) : [...arr, value] };
+     });
+  };
+  const fetchMyOrders = async () => {
     setLoading(true);
     
     const { data: ordersData, error: ordersError } = await supabase
@@ -552,7 +649,6 @@ const fetchMyOrders = async () => {
        setSelectedOrder({...selectedOrder, status: 'Cancelled'});
        showToast("Order Cancelled Successfully");
        
-       // 🌟 NOTIFICATION TO ADMIN (Buyer Cancelled)
        const { data: adminUser } = await supabase.from('users').select('push_token').eq('phone', 9758008624).single();
        if (adminUser?.push_token) {
           sendPushNotification(
@@ -588,7 +684,6 @@ const fetchMyOrders = async () => {
       setSelectedOrder({...selectedOrder, meta: currentMeta});
       showToast("Screenshot Uploaded Successfully!");
 
-      // 🌟 NOTIFICATION TO ADMIN (Screenshot Uploaded)
       const { data: adminUser } = await supabase.from('users').select('push_token').eq('phone', 9758008624).single();
       if (adminUser?.push_token) {
          sendPushNotification(
@@ -639,7 +734,7 @@ const fetchMyOrders = async () => {
     } else alert("Invalid Password!");
   };
 
-const handleSignup = async () => {
+  const handleSignup = async () => {
     if (!signupData.name || !signupData.password || !signupData.pincode || !signupData.address) {
       return alert("Please fill all fields.");
     }
@@ -666,7 +761,7 @@ const handleSignup = async () => {
 
   const handleUpdateAddress = async () => {
     if (!currentUser) return;
-    setLoading(true); // Loader dikhane ke liye
+    setLoading(true); 
     try {
       const { error } = await supabase
         .from('users')
@@ -682,11 +777,10 @@ const handleSignup = async () => {
 
       if (error) throw error;
 
-      // 🌟 State aur LocalStorage sync karo taaki turant dikhne lage
       const updatedUser = { 
         ...currentUser, 
         ...addressData,
-        phone: addressData.mobile // Mobile field mismatch fix
+        phone: addressData.mobile
       };
       setCurrentUser(updatedUser);
       localStorage.setItem('nayika_naari_user', JSON.stringify(updatedUser));
@@ -725,17 +819,36 @@ const handleSignup = async () => {
     }
   };
 
-const filteredProducts = useMemo(() => {
-    let filtered = selectedSubcategory === 'All' ? products : products.filter(p => p.subcategory === selectedSubcategory);
+  const filteredProducts = useMemo(() => {
+    let filtered = [...products];
+
+    // 1. Applied Bottom Sheet Filters
+    if (appliedFilters.subcategories.length > 0) filtered = filtered.filter(p => appliedFilters.subcategories.includes(p.subcategory));
+    if (appliedFilters.sellers.length > 0) filtered = filtered.filter(p => appliedFilters.sellers.includes(p.seller || 'Nayika Naari'));
+    if (appliedFilters.priceRanges.length > 0) {
+      filtered = filtered.filter(p => appliedFilters.priceRanges.some((range: string) => {
+          const [min, max] = range.split('-').map(Number);
+          return (p.cost || 0) >= min && (p.cost || 0) <= max;
+      }));
+    }
+
+    // 2. Search Text
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
-      filtered = filtered.filter(p => 
-        (p.name && p.name.toLowerCase().includes(q)) || 
-        (p.subcategory && p.subcategory.toLowerCase().includes(q))
-      );
+      filtered = filtered.filter(p => (p.name && p.name.toLowerCase().includes(q)) || (p.subcategory && p.subcategory.toLowerCase().includes(q)));
     }
+
+    // 3. Quick Pills Logic (Optimized array mutation)
+    if (quickFilter === 'Repeat Order') {
+       filtered = filtered.filter(p => orderedProductIds.has(p.id));
+    } else if (quickFilter === 'Low Rate Item') {
+       filtered.sort((a, b) => (a.cost || 0) - (b.cost || 0));
+    } else if (quickFilter === 'New Items') {
+       filtered.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+    }
+
     return filtered;
-  }, [products, selectedSubcategory, searchQuery]);
+  }, [products, searchQuery, appliedFilters, quickFilter, orderedProductIds]);
 
   const updateQty = (size: string, delta: number, boxSize: number) => {
     setSizeQuantities(prev => ({ ...prev, [size]: Math.max(0, (prev[size] || 0) + (delta * boxSize)) }));
@@ -773,31 +886,9 @@ const filteredProducts = useMemo(() => {
     }, 800);
   };
 
-  const groupedCart = useMemo(() => {
-    const groups: Record<number, any> = {};
-    cart.forEach(item => {
-      if (!groups[item.id]) groups[item.id] = { productRef: item, id: item.id, name: item.name, subcategory: item.subcategory, displayImg: item.displayImg, totalPrice: 0, totalPcs: 0, totalBoxes: 0, sizesMap: {} };
-      groups[item.id].sizesMap[item.selectedSize] = item.qtyPieces;
-      groups[item.id].totalPcs += item.qtyPieces;
-      groups[item.id].totalBoxes += Math.ceil(item.qtyPieces / item.boxSize);
-      groups[item.id].totalPrice += item.totalLineCost;
-    });
-    return Object.values(groups);
-  }, [cart]);
-
-  const cartTotalAmount = cart.reduce((a, b) => a + b.totalLineCost, 0);
-
-  // 🌟 SHIPPING, MOV & EXEMPTION LOGIC
-  const exemptedPincodes = ["282001", "282002", "282003", "282004", "282005", "282006", "282007", "282008", "282009", "282010", "282011", "282012", "282013", "282014", "282015", "282016", "282017", "282018", "282019", "282020"];
-  const isAgraExempted = exemptedPincodes.includes(addressData?.pincode?.toString());
-  const shippingCharge = isAgraExempted ? 0 : 100;
-  const minOrderVal = isAgraExempted ? 0 : 2500;
-  const isMovMet = cartTotalAmount >= minOrderVal;
-
   const handlePlaceOrderClick = () => {
     if (!currentUser) { alert("Please login to place an order."); setView('auth_phone'); return; }
     
-    // 🌟 FIX: Agar koi bhi address field miss hai, toh Address Sheet open hogi
     if (!addressData.name || !addressData.mobile || !addressData.pincode || !addressData.address || !addressData.city || !addressData.state) { 
       showToast("Please complete your delivery address first."); 
       setActiveSheet('address'); 
@@ -813,7 +904,6 @@ const filteredProducts = useMemo(() => {
     handlePlaceOrder();
   };
 
-  // 🌟 DIRECT ONESIGNAL REST API (Frontend Fallback for Notifications)
   const sendPushNotification = async (targetToken: string, title: string, message: string, url: string) => {
     if (!targetToken) return;
     try {
@@ -836,84 +926,77 @@ const filteredProducts = useMemo(() => {
     }
   };
 
-  // 🌟 MAIN ORDER FUNCTION
   const handlePlaceOrder = async () => {
+    if (activeCartItems.length === 0) return;
     setIsPlacingOrder(true); setOrderProgress(10);
 
     try {
       setOrderProgress(40);
-      const totalPcs = cart.reduce((a, b) => a + b.qtyPieces, 0);
+      const totalPcs = groupedCart.reduce((a, b) => a + b.totalPcs, 0);
       const totalBoxes = groupedCart.reduce((a, b) => a + b.totalBoxes, 0);
+      const orderAmount = cartTotalAmount; 
 
       const { data: order, error } = await supabase.from('orders').insert([{
         userid: currentUser.id, pincode: addressData.pincode, city: addressData.city, state: addressData.state,
         address: addressData.address, phone: addressData.mobile, box: totalBoxes, pcs: totalPcs,
-        status: 'Pending', amount: cartTotalAmount, advance: shippingCharge,
-        meta: { screenshot_uploaded: false }
+        status: 'Pending', amount: orderAmount, finalAmount: orderAmount, advance: shippingCharge,
+        meta: { screenshot_uploaded: false, sellerName: activeCartSeller }
       }]).select().single();
 
       if (error) throw error;
       setOrderProgress(60);
 
-      const details = cart.map(i => ({
-        orderid: order.id, userid: currentUser.id, productid: i.id, size: i.selectedSize,
-        box: Math.ceil(i.qtyPieces / i.boxSize), qty: i.qtyPieces, rate: i.unitPrice, meta: { name: i.name, img: i.displayImg }
-      }));
+      const details = activeCartItems.map(i => {
+        const meta = safeParseJSON(i.meta, {});
+        const isOOS = meta?.attributes?.available_sizes?.[i.selectedSize]?.is_active === false;
+
+        return {
+          orderid: order.id, userid: currentUser.id, productid: i.id, size: i.selectedSize,
+          box: Math.ceil(i.qtyPieces / i.boxSize), qty: i.qtyPieces, 
+          remainingQty: isOOS ? 0 : i.qtyPieces, 
+          rate: i.unitPrice, meta: { name: i.name, img: i.displayImg }
+        }
+      });
       await supabase.from('order_details').insert(details);
       
       setOrderProgress(80);
 
-      await supabase.from('cart_items')
-        .update({ status: 1, updated_at: getLocalTimestamp() })
-        .eq('user_id', currentUser.id)
-        .eq('status', 0);
+      for (const item of activeCartItems) {
+         await supabase.from('cart_items')
+           .update({ status: 1, updated_at: getLocalTimestamp() })
+           .match({ user_id: currentUser.id, product_id: item.id, size: item.selectedSize, status: 0 });
+      }
 
-      setCart([]);
+      setCart(prev => prev.filter(item => (item.seller || 'Nayika Naari') !== activeCartSeller));
       
       setOrderProgress(100);
 
-      let msg = `*🚨 New Order Placed! (Order #${order.id})*\n\n*Name:* ${addressData.name}\n*Phone:* ${addressData.mobile}\n*City:* ${addressData.city}, ${addressData.state}\n\n*📦 ORDER DETAILS:*\n------------------------\n`;
+      let msg = `*🚨 New Order Placed! (Order #${order.id})*\n*Seller:* ${activeCartSeller}\n\n*Name:* ${addressData.name}\n*Phone:* ${addressData.mobile}\n*City:* ${addressData.city}, ${addressData.state}\n\n*📦 ORDER DETAILS:*\n------------------------\n`;
       groupedCart.forEach((group, index) => { 
         msg += `*${index + 1}. ${group.name} (${group.subcategory})*\n`;
         Object.entries(group.sizesMap).forEach(([size, qtyPieces]: any) => {
            const boxSize = group.productRef.boxSize || 6;
            const boxes = Math.ceil(qtyPieces / boxSize);
-           msg += `• Size ${size} | ${boxes} Box (${qtyPieces} Pcs)\n`;
+           const isOOS = group.oosSizes.includes(size);
+           msg += `• Size ${size} | ${boxes} Box (${qtyPieces} Pcs)${isOOS ? ' - OOS' : ''}\n`;
         });
         msg += `\n`;
       });
       
-      const advance = 100; 
-      
-      msg += `------------------------\n*Total Amount:* ₹${cartTotalAmount}/-`;
-      
-      if (advance > 0) {
-        msg += `\n*Advance:* ₹${advance}/-`;
+      msg += `------------------------\n*Total Amount:* ₹${orderAmount}/-`;
+      if (shippingCharge > 0) {
+        msg += `\n*Advance:* ₹${shippingCharge}/-`;
       }
-      
       msg += `\n\n_Screenshot attached in app._`;
       
-      // 🌟 NOTIFICATION TO BUYER
       const myWebsiteUrl = window.location.origin;
-
       if (currentUser?.push_token) {
-         sendPushNotification(
-           currentUser.push_token, 
-           "Order Placed Successfully! 🎉", 
-           `Hey ${addressData.name}, your order #${order.id} for ₹${cartTotalAmount} has been sent to Nayika Naari.`, 
-           `${myWebsiteUrl}/?view=order_detail&order_id=${order.id}` 
-         );
+         sendPushNotification(currentUser.push_token, "Order Placed Successfully! 🎉", `Hey ${addressData.name}, your order #${order.id} for ₹${orderAmount} has been sent.`, `${myWebsiteUrl}/?view=order_detail&order_id=${order.id}`);
       }
 
-      // 🌟 NOTIFICATION TO ADMIN (Number string ki jagah number form me bheja hai taki fail na ho)
       const { data: adminUser } = await supabase.from('users').select('push_token').eq('phone', 9758008624).single();
       if (adminUser?.push_token) {
-         sendPushNotification(
-           adminUser.push_token, 
-           "New Order Received! 🛍️", 
-           `${addressData.name} just placed Order #${order.id} for ₹${cartTotalAmount}.`, 
-           `${myWebsiteUrl}/?view=seller_orders`
-         );
+         sendPushNotification(adminUser.push_token, "New Order Received! 🛍️", `${addressData.name} placed Order #${order.id} for ₹${orderAmount}.`, `${myWebsiteUrl}/?view=seller_orders`);
       }
 
       setTimeout(() => {
@@ -936,9 +1019,7 @@ const filteredProducts = useMemo(() => {
     cart.forEach(item => { if (item.id === product.id) existingQty[item.selectedSize] = item.qtyPieces; });
     setSizeQuantities(existingQty); 
     setCurrentImgIndex(0); 
-    
     setIsSearching(false); 
-    
     setView('pdp');
   };
 
@@ -975,7 +1056,6 @@ if (view === 'splash') return (
         {view === 'login_password' && (
           <div className="space-y-4 animate-in slide-in-from-right-4 duration-300">
             <div className="flex justify-between items-center p-4 bg-gray-50 border border-gray-200"><span className="font-bold text-gray-600">+91 {authPhone}</span><button onClick={() => { setView('auth_phone'); setAuthPassword(''); }} style={{color: theme.primary}} className="text-xs font-bold underline">Change</button></div>
-            {/* 🌟 NAYA: Password Input with Forgot Password CTA */}
             <div className="flex items-center gap-3 w-full">
               <input 
                 type="password" 
@@ -1001,12 +1081,9 @@ if (view === 'splash') return (
             <div className="p-3 bg-gray-50 border border-gray-200 text-sm font-bold text-gray-500 rounded">+91 {signupData.phone}</div>
             
             <input type="text" placeholder="Full Name" className="input-field" value={signupData.name} onChange={e => setSignupData({...signupData, name: e.target.value})} />
-            
             <input type="password" placeholder="Create Password" className="input-field" value={signupData.password} onChange={e => setSignupData({...signupData, password: e.target.value})} />
-            
             <input type="number" placeholder="Pincode" className="input-field" value={signupData.pincode} onChange={e => fetchPincodeDetails(e.target.value, true)} />
             
-            {/* 🌟 City & State as small labels (No input field) */}
             {(signupData.city || signupData.state) && (
               <div className="px-1 flex gap-2 text-[10px] font-black uppercase tracking-widest text-gray-400" translate="no">
                 <span>{signupData.city}</span>
@@ -1016,7 +1093,6 @@ if (view === 'splash') return (
             )}
 
             <textarea placeholder="Complete Address" className="input-field h-20" value={signupData.address} onChange={e => setSignupData({...signupData, address: e.target.value})} />
-            
             <p className="text-[10px] text-gray-400 font-medium text-center">Verify your details before creating account.</p>
           </div>
         )}
@@ -1133,46 +1209,37 @@ if (view === 'splash') return (
 
       {zoomOverlay && (
         <div className="fixed inset-0 z-[2000] bg-black/95 flex flex-col items-center justify-center backdrop-blur-sm">
-          {zoomOverlay && (
-        <div className="fixed inset-0 z-[2000] bg-black/95 flex flex-col items-center justify-center backdrop-blur-sm">
-          {/* Close Button */}
           <button onClick={() => setZoomOverlay(null)} className="absolute top-6 right-6 p-3 bg-white/10 text-white rounded-full z-[2100] active:bg-white/20">
             <X size={24} />
           </button>
           
-          {/* Image Counter */}
           {zoomOverlay.images.length > 1 && (
             <div className="absolute top-8 left-1/2 -translate-x-1/2 bg-white/20 text-white px-4 py-1.5 rounded-full text-xs font-bold tracking-widest z-[2100]">
               {zoomOverlay.currentIndex + 1} / {zoomOverlay.images.length}
             </div>
           )}
 
-      {/* 🌟 NAYA: Swipe + Native Pinch-to-Zoom Tracker */}
           <div 
             className="relative w-full h-full flex items-center justify-center overflow-auto scrollbar-hide"
             onTouchStart={(e) => {
               if (e.touches.length === 2) {
-                // Agar 2 fingers hain, toh unke beech ka distance calculate karo
                 const dist = Math.hypot(
                   e.touches[0].clientX - e.touches[1].clientX,
                   e.touches[0].clientY - e.touches[1].clientY
                 );
                 e.currentTarget.dataset.pinchDist = dist.toString();
                 
-                // Current zoom level save karo
                 const img = document.getElementById('zoomed-img');
                 if (img) {
                   const currentScale = img.style.transform.match(/scale\(([^)]+)\)/)?.[1] || '1';
                   e.currentTarget.dataset.baseScale = currentScale;
                 }
               } else if (e.touches.length === 1) {
-                // Agar 1 finger hai toh swipe ke liye X position save karo
                 e.currentTarget.dataset.touchstartX = e.changedTouches[0].clientX.toString();
               }
             }}
             onTouchMove={(e) => {
               if (e.touches.length === 2) {
-                // 🌟 Pinch Zoom Logic
                 const startDist = parseFloat(e.currentTarget.dataset.pinchDist || '0');
                 const baseScale = parseFloat(e.currentTarget.dataset.baseScale || '1');
                 
@@ -1182,7 +1249,6 @@ if (view === 'splash') return (
                     e.touches[0].clientY - e.touches[1].clientY
                   );
                   
-                  // Naya scale calculate karo (Min 1x, Max 4x zoom limit)
                   let newScale = baseScale * (dist / startDist);
                   newScale = Math.min(Math.max(1, newScale), 4);
                   
@@ -1192,22 +1258,17 @@ if (view === 'splash') return (
               }
             }}
             onTouchEnd={(e) => {
-              // Pinch reset
               e.currentTarget.dataset.pinchDist = '0';
-
-              // 🌟 Swipe Logic (Left / Right)
               if (e.changedTouches.length === 1) {
                 const startX = parseFloat(e.currentTarget.dataset.touchstartX || '0');
                 const endX = e.changedTouches[0].clientX;
                 const diff = startX - endX;
 
-                // Left Swipe -> Next Image
                 if (diff > 50 && zoomOverlay.currentIndex < zoomOverlay.images.length - 1) {
                   setZoomOverlay(prev => prev ? {...prev, currentIndex: prev.currentIndex + 1} : null);
                   const img = document.getElementById('zoomed-img');
                   if (img) img.style.transform = 'scale(1)'; 
                 } 
-                // Right Swipe -> Previous Image
                 else if (diff < -50 && zoomOverlay.currentIndex > 0) {
                   setZoomOverlay(prev => prev ? {...prev, currentIndex: prev.currentIndex - 1} : null);
                   const img = document.getElementById('zoomed-img');
@@ -1216,33 +1277,29 @@ if (view === 'splash') return (
               }
             }}
           >
-            {/* Prev Arrow */}
             {zoomOverlay.currentIndex > 0 && (
               <button onClick={(e) => { e.stopPropagation(); setZoomOverlay(prev => prev ? {...prev, currentIndex: prev.currentIndex - 1} : null); }} className="absolute left-4 p-3 bg-white/10 text-white rounded-full z-[2100] hover:bg-white/20 transition-colors hidden md:flex">
                 <ChevronLeft size={28}/>
               </button>
             )}
 
-            {/* Zoomable Image */}
             <div className="w-full max-w-md flex items-center justify-center p-2 min-h-full">
               <img 
                 id="zoomed-img"
                 src={zoomOverlay.images[zoomOverlay.currentIndex]} 
-className="w-full h-auto max-h-[85vh] object-contain transition-transform duration-75 origin-center cursor-zoom-in"
+                className="w-full h-auto max-h-[85vh] object-contain transition-transform duration-75 origin-center cursor-zoom-in"
                 alt="Zoomed" 
                 onClick={(e) => {
                   e.stopPropagation();
-                  // Double Tap / Single Tap zoom in-out
                   const img = e.currentTarget;
                   const isZoomed = img.style.transform.includes('scale(2.5)');
                   img.style.transform = isZoomed ? 'scale(1)' : 'scale(2.5)';
-                  img.style.transitionDuration = '300ms'; // Smooth animation for tap
-                  setTimeout(() => { img.style.transitionDuration = '50ms'; }, 300); // Reset for pinch
+                  img.style.transitionDuration = '300ms'; 
+                  setTimeout(() => { img.style.transitionDuration = '50ms'; }, 300); 
                 }}
               />
             </div>
 
-            {/* Next Arrow */}
             {zoomOverlay.currentIndex < zoomOverlay.images.length - 1 && (
               <button onClick={(e) => { e.stopPropagation(); setZoomOverlay(prev => prev ? {...prev, currentIndex: prev.currentIndex + 1} : null); }} className="absolute right-4 p-3 bg-white/10 text-white rounded-full z-[2100] rotate-180 hover:bg-white/20 transition-colors hidden md:flex">
                 <ChevronLeft size={28}/>
@@ -1250,12 +1307,9 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
             )}
           </div>
           
-          {/* User Hint */}
           <div className="absolute bottom-6 left-1/2 -translate-x-1/2 text-[10px] text-white/50 font-bold tracking-widest uppercase pointer-events-none z-[2100]">
             Swipe • Tap to zoom
           </div>
-        </div>
-      )}
         </div>
       )}
 
@@ -1299,7 +1353,6 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
                   <div className="bg-gray-100 p-1.5 text-gray-600 rounded-md"><MapPin size={16}/></div>
                   <div>
                     <p className="text-[9px] text-gray-400 font-bold uppercase tracking-tighter">Deliver to</p>
-                    {/* 🌟 FIX 3 */}
                     <p className="text-[11px] font-bold leading-tight truncate w-24" style={{color: theme.textDark}} translate="no">
                       <span>{currentUser?.city || 'India'}</span>
                     </p>
@@ -1326,7 +1379,6 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
               <div className="flex gap-2 shrink-0 ml-auto z-10 relative">
                 {view === 'plp' && <div className="bg-gray-50 p-1.5 rounded-md cursor-pointer pointer-events-auto" onClick={() => setIsSearching(true)}><Search size={18} /></div>}
                 
-                {/* 🌟 NAYA BELL ICON (In-App Notifications) */}
                 {currentUser && (
                   <div className="bg-gray-50 p-1.5 relative cursor-pointer rounded-md pointer-events-auto" onClick={() => {
                      setView('notifications');
@@ -1350,7 +1402,6 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
 
       <main id="main-scroll" className="flex-1 flex flex-col w-full overflow-y-auto scrollbar-hide pb-[90px]">
         
-        {/* 🌟 NAYA NOTIFICATIONS PANEL (Bina DB) */}
         {view === 'notifications' && (
           <div className="animate-in fade-in duration-300 flex flex-col flex-1 bg-[#F5F5F6] relative p-4">
              {localNotifs.length === 0 ? (
@@ -1390,10 +1441,46 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
 
         {view === 'plp' && (
           <div className="animate-in fade-in duration-500 bg-gray-100 flex-1 flex flex-col">
-           <div className="flex overflow-x-auto gap-2 px-3 py-3 bg-white scrollbar-hide border-b border-gray-200 shrink-0 sticky top-0 z-30">
-              {['All', ...new Set(products.map(p => p.subcategory))].map(sub => (
-                <button key={sub} onClick={() => setSelectedSubcategory(sub)} className={`whitespace-nowrap px-4 py-1.5 text-xs font-bold border transition-all rounded-full ${selectedSubcategory === sub ? 'text-white' : 'border-gray-200 text-gray-600 bg-white'}`} style={selectedSubcategory === sub ? {backgroundColor: theme.primary, borderColor: theme.primary} : {}}>{sub}</button>
-              ))}
+          {/* 🌟 NAYA: Dynamic Pills + Filters Button */}
+           <div className="flex items-center gap-2 px-3 py-3 bg-white border-b border-gray-200 shrink-0 sticky top-0 z-30 shadow-[0_2px_10px_rgba(0,0,0,0.03)]">
+              <div className="flex overflow-x-auto gap-2 scrollbar-hide flex-1 pb-0.5">
+                 {['All', 'Repeat Order', 'Low Rate Item', 'New Items'].map(qf => (
+                   <button 
+                     key={qf} 
+                     onClick={() => setQuickFilter(qf)} 
+                     className={`whitespace-nowrap px-4 py-1.5 text-[11px] font-bold border transition-all rounded-full ${quickFilter === qf ? 'text-white shadow-md border-transparent' : 'border-gray-200 text-gray-600 bg-white'}`} 
+                     style={quickFilter === qf ? {backgroundColor: theme.primary} : {}}
+                   >
+                     {qf}
+                   </button>
+                 ))}
+              </div>
+              
+              <div className="w-[1px] h-6 bg-gray-200 mx-0.5 shrink-0"></div>
+              
+              <button 
+                onClick={() => { 
+                   setTempFilters(appliedFilters); 
+                   setActiveFilterTab('Category'); 
+                   setIsFilterSheetOpen(true); 
+                }} 
+                // 🌟 FIX: 'relative' class hata di taaki overlap na ho
+                className="flex items-center justify-center gap-1.5 shrink-0 px-3 py-1.5 border border-gray-200 rounded-lg bg-gray-50 text-gray-700 text-[11px] font-black active:bg-gray-100 uppercase tracking-wide transition-colors hover:border-gray-300"
+              >
+                 <SlidersHorizontal size={14} className="text-gray-500" /> 
+                 <span>Filters</span>
+                 
+                 {/* 🌟 FIX: Badge ko absolute se hata kar normal flex flow mein daal diya text ke bagal mein */}
+                 {(() => {
+                    const filterCount = appliedFilters.subcategories.length + appliedFilters.sellers.length + appliedFilters.priceRanges.length;
+                    if (filterCount > 0) return (
+                       <span className="min-w-[16px] h-4 px-1 ml-0.5 rounded-full flex items-center justify-center text-[10px] font-black text-white shadow-sm" style={{backgroundColor: theme.primary}}>
+                         {filterCount}
+                       </span>
+                    );
+                    return null;
+                 })()}
+              </button>
             </div>
             <div className="flex justify-between items-center px-4 py-3 bg-white border-b border-gray-200 text-[11px] text-gray-500 font-medium shrink-0">
                <span>{filteredProducts.length} Products</span>
@@ -1420,7 +1507,13 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
                       </div>
                       <div className="flex flex-col flex-1 px-2.5 pt-2.5">
                         <h4 className="font-bold text-[13px] text-gray-900 truncate leading-tight">{p.name}</h4>
-                        <p className="text-[10px] text-gray-500 truncate mt-0.5">
+                        
+                        {/* 🌟 NAYA: Seller Pill */}
+                        <div className="text-[9px] font-bold text-gray-500 mt-1 flex items-center gap-1">
+                            <span className="bg-gray-100 px-1.5 py-0.5 rounded border border-gray-200">Sold By: {p.seller || 'Nayika Naari'}</span>
+                        </div>
+
+                        <p className="text-[10px] text-gray-500 truncate mt-1">
                           {p.description ? p.description.replace(/\\n|\n/g, ' ') : ''}
                         </p>
                         <div className="mt-1.5 flex flex-col gap-1">
@@ -1538,16 +1631,20 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
                 </div>
               </div>
 
-              <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[450px] bg-white p-3 border-t border-gray-200 z-50 shadow-[0_-10px_20px_rgba(0,0,0,0.05)]">
+             <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[450px] bg-white p-3 border-t border-gray-200 z-50 shadow-[0_-10px_20px_rgba(0,0,0,0.05)] flex items-center gap-3">
+                 <div className="flex flex-col w-1/3 shrink-0 pl-1 border-r border-gray-100">
+                   <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-0.5">Sold By</span>
+                   <span className="text-xs font-black text-gray-900 truncate pr-2">{selectedProduct.seller || 'Nayika Naari'}</span>
+                 </div>
                  <button 
                    onClick={addToTruck} 
                    disabled={isAdding} 
-                   className="w-full text-white py-4 font-black uppercase tracking-widest text-[13px] flex items-center justify-center gap-3 active:scale-95 transition-all btn-premium glow-effect"
+                   className="w-2/3 flex-1 text-white py-3.5 rounded-xl font-black uppercase tracking-widest text-[13px] flex items-center justify-center gap-2 active:scale-95 transition-all btn-premium glow-effect"
                  >
                    {isAdding ? (
-                     <Loader2 size={22} className="animate-spin"/>
+                     <Loader2 size={20} className="animate-spin"/>
                    ) : (
-                     <ShoppingCart size={22} className="icon-heartbeat drop-shadow-md" />
+                     <ShoppingCart size={20} className="icon-heartbeat drop-shadow-md" />
                    )}
                    {currentTotal > 0 ? `ADD TO CART (₹ ${currentTotal})` : 'ADD TO CART'}
                  </button>
@@ -1574,21 +1671,66 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
             ) : (
               <div className="w-full flex flex-col gap-2">
                 
+                {/* 🌟 NEW ADDRESS CARD & SELLER PILLS (UPDATED UI) */}
                 <div className="bg-white p-4 border-b border-gray-200 shadow-sm mb-2">
-                   <div className="flex justify-between items-start mb-1.5">
-                      <h3 className="font-bold text-gray-900 text-[14px]">Deliver to: <span style={{color: theme.primary}}>{addressData.name || 'User'}</span></h3>
-                      <button onClick={() => { if(currentUser) setActiveSheet('address'); else { alert("Login to add address"); setView('auth_phone'); } }} className="text-xs font-bold uppercase" style={{color: theme.primary}}>Change</button>
+                   <div className="flex justify-between items-center mb-1">
+                      <div className="flex items-center gap-2 text-[14px]">
+                         <span className="font-bold text-gray-900">Deliver to:</span>
+                         <span className="font-black" style={{color: theme.primary}}>{addressData.name || 'User'}</span>
+                         <span className="text-gray-500 text-[12px] ml-1">{addressData.mobile || '---'}</span>
+                      </div>
+                      <button onClick={() => { if(currentUser) setActiveSheet('address'); else { alert("Login to add address"); setView('auth_phone'); } }} className="text-xs font-black uppercase tracking-widest" style={{color: theme.primary}}>Change</button>
                    </div>
-                   {/* 🌟 FIX 1: translation crash se bachne ke liye */}
-                   <p className="text-xs text-gray-500 leading-relaxed pr-6 mt-2" translate="no">
+                   <p className="text-[12px] text-gray-500 leading-relaxed line-clamp-2 mt-1" translate="no">
                      <span>{addressData.address || 'Address not added'}</span>, <span>{addressData.city}</span>, <span>{addressData.state}</span> - <span>{addressData.pincode}</span>
                    </p>
-                   <p className="text-xs text-gray-500 mt-1" translate="no"><span>{addressData.mobile || '---'}</span></p>
+
+                 {/* SELLER PILLS (FIXED: 2 Sellers Visible) */}
+                   {cartSellers.length > 0 && activeCartSeller && (() => {
+                     // 🌟 FIX: Active seller ko pehle rakha, aur bache hue me se 1 aur le liya (Total Max 2)
+                     const visibleSellers = [activeCartSeller, ...cartSellers.filter(s => s !== activeCartSeller)].slice(0, 3);
+
+                     return (
+                       <div className="mt-4 pt-3 border-t border-gray-100 flex items-center gap-2 overflow-x-auto scrollbar-hide pb-1">
+                           {visibleSellers.map(seller => {
+                              // 🌟 FIX: Is seller ke cart mein kitne unique products hain wo count kiya
+                              const productCount = new Set(cart.filter(i => (i.seller || 'Nayika Naari') === seller).map(i => i.id)).size;
+                              
+                              return (
+                                <button 
+                                   key={seller}
+                                   onClick={() => setActiveCartSeller(seller)}
+                                   className={`px-4 py-1.5 rounded-full text-[12px] font-bold whitespace-nowrap transition-colors border ${activeCartSeller === seller ? 'text-white border-transparent shadow-sm' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'}`}
+                                   style={activeCartSeller === seller ? {backgroundColor: theme.primary} : {}}
+                                >
+                                   {seller} ({productCount})
+                                </button>
+                              )
+                           })}
+
+                           {/* 🌟 FIX: Agar 2 se zyada hain toh bache hue ka count dikhao */}
+                           {cartSellers.length > 3 && (
+                              <button 
+                                 onClick={() => setIsSellerSheetOpen(true)}
+                                 className="px-3 py-1.5 rounded-full text-[12px] font-black whitespace-nowrap bg-transparent text-blue-700 hover:underline"
+                              >
+                                 +{cartSellers.length - 3} Sellers
+                              </button>
+                           )}
+                       </div>
+                     );
+                   })()}
                 </div>
 
                 <div className="flex flex-col gap-2 bg-[#F5F5F6]">
-                  {groupedCart.map((group, idx) => (
-                    <div key={idx} className="bg-white p-4 relative shadow-sm">
+                  {groupedCart.map((group, idx) => {
+                    const hasOOS = group.oosSizes.length > 0;
+                    const sizesArray = Object.entries(group.sizesMap);
+                    const displayedSizes = sizesArray.slice(0, 5);
+                    const hiddenSizesCount = sizesArray.length - 5;
+
+                    return (
+                    <div key={idx} className="bg-white p-3 relative shadow-sm border-b border-gray-100">
                       <button onClick={async () => {
                           const updatedCart = cart.filter(item => item.id !== group.id);
                           setCart(updatedCart);
@@ -1598,43 +1740,79 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
                              localStorage.setItem('nayika_naari_guest_cart', JSON.stringify(updatedCart));
                           }
                           showToast("Item Removed");
-                      }} className="absolute top-4 right-4 w-7 h-7 flex items-center justify-center text-gray-400 hover:text-red-500 transition-colors"><X size={18}/></button>
-                      
-                      <div className="flex gap-4">
-                         <div 
-                           className="w-24 h-32 bg-gray-50 shrink-0 cursor-pointer"
-                           onClick={() => { const imgs = safeParseJSON(group.productRef.img, {images:[]}).images; setZoomOverlay({images: imgs, currentIndex: 0}); }}
-                         >
-                           <img src={group.displayImg} className="w-full h-full object-cover" alt="" />
+                      }} className="absolute top-3 right-3 w-6 h-6 flex items-center justify-center text-gray-400 hover:text-red-500 transition-colors z-10"><X size={16}/></button>
+
+                      <div className="flex gap-3">
+                         {/* Left Column: Logo & Image */}
+                         <div className="flex flex-col items-center gap-1 w-[85px] shrink-0">
+                           <img src="/logo.png" alt="Brand" className="h-4 object-contain opacity-80 mb-1" />
+                           <div 
+                             className="w-full aspect-[3/4] bg-gray-50 cursor-pointer rounded overflow-hidden border border-gray-100"
+                             onClick={() => { const imgs = safeParseJSON(group.productRef.img, {images:[]}).images; setZoomOverlay({images: imgs, currentIndex: 0}); }}
+                           >
+                             <img src={group.displayImg} className="w-full h-full object-cover mix-blend-multiply" alt="" />
+                           </div>
                          </div>
                          
-                         <div className="flex-1 flex flex-col">
-                            <h4 className="font-bold text-gray-900 text-[14px] leading-tight pr-6">{group.name}</h4>
-                            <p className="text-gray-500 text-[11px] mt-1">{group.subcategory}</p>
-                            <p className="font-black text-gray-900 text-[15px] mt-2">₹{group.totalPrice}</p>
-                            <p className="font-medium text-gray-500 text-[11px] mt-1">Total: {group.totalBoxes} Box ({group.totalPcs} Pcs)</p>
+                         {/* Right Column: Details */}
+                         <div className="flex-1 flex flex-col pt-1">
+                            <h4 className="font-black text-gray-900 text-[13px] leading-tight pr-6 uppercase tracking-tight">{group.name}</h4>
+                            <p className="text-gray-500 text-[11px] mt-0.5">{group.subcategory}</p>
                             
-                            <div className="mt-auto pt-3">
-                              <button onClick={() => { setEditingGroup(group); setSizeQuantities(group.sizesMap); setActiveSheet('sizes'); }} className="text-xs font-bold bg-gray-100 px-3 py-1.5 rounded w-fit" style={{color: theme.textDark}}>Edit Sizes & Qty ▾</button>
+                            <div className="flex justify-between items-end mt-1">
+                                <div>
+                                   {group.totalPrice > 0 ? (
+                                      <p className="font-black text-gray-900 text-[18px]">₹{group.totalPrice}</p>
+                                   ) : (
+                                      <p className="font-black text-red-500 text-[14px]">Unavailable</p>
+                                   )}
+                                   <p className="font-medium text-gray-500 text-[11px]">Total: {group.totalBoxes} Box ({group.totalPcs} Pcs)</p>
+                                </div>
+
+                                <div className="flex flex-col items-end gap-1.5">
+                                    {hasOOS && (
+                                       <div className="bg-[#FFF0F0] text-[#FF3F6C] text-[10px] font-bold px-2 py-1 rounded-full border border-[#FFE4EB] whitespace-nowrap">
+                                          Out of Stock: {group.oosSizes.join(', ')}
+                                       </div>
+                                    )}
+                                    <button onClick={() => { setEditingGroup(group); setSizeQuantities(group.sizesMap); setActiveSheet('sizes'); }} className="text-[10px] font-bold bg-gray-100 px-2.5 py-1.5 rounded flex items-center gap-1 text-gray-700 border border-gray-200 active:bg-gray-200">
+                                       Edit Sizes & Qty ▾
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            {/* Bottom Row: Sizes List */}
+                            <div className="mt-3 flex flex-wrap gap-1.5 items-center">
+                              {displayedSizes.map(([sz, q]: any) => {
+                                 const isOOS = group.oosSizes.includes(sz);
+                                 return (
+                                    <span key={sz} className={`text-[11px] font-bold px-1.5 py-0.5 rounded border shadow-sm flex gap-1 ${isOOS ? 'bg-red-50 text-red-400 border-red-100 line-through' : 'bg-white text-gray-700 border-gray-200'}`}>
+                                      <span>{sz}:</span> <span className={isOOS ? "text-red-400" : "text-blue-600"}>{q}</span>
+                                    </span>
+                                 )
+                              })}
+                              {/* 🌟 FIX: Made "+X more" clickable to open the edit sizes sheet */}
+                              {hiddenSizesCount > 0 && (
+                                  <button 
+                                      onClick={() => { setEditingGroup(group); setSizeQuantities(group.sizesMap); setActiveSheet('sizes'); }} 
+                                      className="text-[11px] font-black text-blue-700 ml-1 hover:underline active:opacity-50"
+                                  >
+                                      +{hiddenSizesCount} more
+                                  </button>
+                              )}
                             </div>
                          </div>
                       </div>
                     </div>
-                  ))}
+                  )})}
                 </div>
 
                 {(() => {
-                   const exemptedPincodes = ["282001", "282002", "282003", "282004", "282005", "282006", "282007", "282008", "282009", "282010", "282011", "282012", "282013", "282014", "282015", "282016", "282017", "282018", "282019", "282020"];
-                   const isAgraExempted = exemptedPincodes.includes(addressData?.pincode?.toString());
-                   const shippingCharge = isAgraExempted ? 0 : 100;
-                   const minOrderVal = isAgraExempted ? 0 : 2500;
-                   const isMovMet = cartTotalAmount >= minOrderVal;
-
                    return (
                      <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[450px] bg-white border-t border-gray-200 z-50 flex flex-col shadow-[0_-5px_15px_rgba(0,0,0,0.05)]">
                         {!isMovMet && minOrderVal > 0 ? (
                            <div className={`bg-red-50 p-2.5 text-[11px] text-red-600 font-bold text-center border-b border-red-100 leading-tight ${shakeBanner ? 'animate-shake' : ''}`}>
-                             <span>Minimum order value is ₹2500. Add items worth ₹{2500 - cartTotalAmount}/- more.</span>
+                             <span>Minimum order value for {activeCartSeller} is ₹{minOrderVal}. Add items worth ₹{minOrderVal - cartTotalAmount}/- more.</span>
                            </div>
                         ) : (
                            <div className="bg-[#FFF4E5] p-2.5 text-[11px] text-[#A65B00] font-bold text-center border-b border-[#FFE0B2] leading-tight">
@@ -1644,46 +1822,37 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
                         <div className="p-3 flex justify-between items-center w-full">
                           <div className="flex flex-col ml-1">
                              <p className="font-bold text-gray-600 text-[11px]">
-                               {/* 🌟 FIX 2: Text ko span mein rakha */}
                                <span>{shippingCharge > 0 ? 'To Confirm, Pay Shipping 100/- on' : 'Free Shipping'}</span>
                              </p>
                              {shippingCharge > 0 && (
-                               <div className="flex flex-col justify-center">
-            
-              
-              <div className="flex bg-white border border-blue-200 rounded-md overflow-hidden shadow-sm w-fit">
-                {/* GPay Button */}
-                <button onClick={(e) => {
-                    e.stopPropagation();
-                    window.location.href = `tez://upi/pay?pa=gpay-11165292302@okbizaxis&pn=Nayika%20Naari&tn=${currentUser?.name}_${currentUser?.phone}&am=100&cu=INR`;
-                  }} 
-                  className="px-2.5 py-1.5 text-[9px] font-black text-blue-700 hover:bg-blue-50 border-r border-blue-100 active:bg-blue-100 transition-colors"
-                >
-                  GPay
-                </button>
-
-                {/* PhonePe Button */}
-                <button onClick={(e) => {
-                    e.stopPropagation();
-                    window.location.href = `phonepe://pay?pa=gpay-11165292302@okbizaxis&pn=Nayika%20Naari&tn=${currentUser?.name}_${currentUser?.phone}&am=100&cu=INR`;
-                  }} 
-                  className="px-2.5 py-1.5 text-[9px] font-black text-purple-700 hover:bg-purple-50 border-r border-blue-100 active:bg-purple-100 transition-colors"
-                >
-                  PhonPe
-                </button>
-
-                {/* Paytm Button */}
-                <button onClick={(e) => {
-                    e.stopPropagation();
-                    window.location.href = `paytmmp://pay?pa=gpay-11165292302@okbizaxis&pn=Nayika%20Naari&tn=${currentUser?.name}_${currentUser?.phone}&am=100&cu=INR`;
-                  }} 
-                  className="px-2.5 py-1.5 text-[9px] font-black text-[#00B9F5] hover:bg-[#F0FAFF] active:bg-[#D9F4FF] transition-colors"
-                >
-                  Paytm
-                </button>
-              </div>
-            </div>
-                               //<p className="font-black text-gray-900 text-[13px]"><span>Paytm/Gpay 9758008624</span></p>
+                               <div className="flex flex-col justify-center mt-1">
+                                  <div className="flex bg-white border border-blue-200 rounded-md overflow-hidden shadow-sm w-fit">
+                                    <button onClick={(e) => {
+                                        e.stopPropagation();
+                                        window.location.href = `tez://upi/pay?pa=gpay-11165292302@okbizaxis&pn=Nayika%20Naari&tn=${currentUser?.name}_${currentUser?.phone}&am=100&cu=INR`;
+                                      }} 
+                                      className="px-2.5 py-1.5 text-[9px] font-black text-blue-700 hover:bg-blue-50 border-r border-blue-100 active:bg-blue-100 transition-colors"
+                                    >
+                                      GPay
+                                    </button>
+                                    <button onClick={(e) => {
+                                        e.stopPropagation();
+                                        window.location.href = `phonepe://pay?pa=gpay-11165292302@okbizaxis&pn=Nayika%20Naari&tn=${currentUser?.name}_${currentUser?.phone}&am=100&cu=INR`;
+                                      }} 
+                                      className="px-2.5 py-1.5 text-[9px] font-black text-purple-700 hover:bg-purple-50 border-r border-blue-100 active:bg-purple-100 transition-colors"
+                                    >
+                                      PhonPe
+                                    </button>
+                                    <button onClick={(e) => {
+                                        e.stopPropagation();
+                                        window.location.href = `paytmmp://pay?pa=gpay-11165292302@okbizaxis&pn=Nayika%20Naari&tn=${currentUser?.name}_${currentUser?.phone}&am=100&cu=INR`;
+                                      }} 
+                                      className="px-2.5 py-1.5 text-[9px] font-black text-[#00B9F5] hover:bg-[#F0FAFF] active:bg-[#D9F4FF] transition-colors"
+                                    >
+                                      Paytm
+                                    </button>
+                                  </div>
+                                </div>
                              )}
                           </div>
                           <div className="flex items-center gap-2">
@@ -1731,17 +1900,22 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
                   return (
                     <div key={o.id || `order_${index}`} onClick={() => openOrderDetails(o)} className={`bg-white rounded-2xl p-4 border shadow-sm cursor-pointer active:scale-[0.98] transition-transform ${isCancelled ? 'border-red-100 opacity-80' : 'border-gray-200'}`}>
                       
-                      <div className="flex justify-between items-start mb-3">
-                        <div>
-                          <p className="text-xs font-black text-gray-600 tracking-widest uppercase">ORDER #{o.id || 'N/A'}</p>
-                          <p className="text-xs font-bold text-gray-500 mt-1">{safeFormatDate(o.createdAt)}</p>
+                     <div className="flex justify-between items-start mb-3">
+                        <div className="flex-1 pr-2">
+                          {/* 🌟 NAYA: Added Seller Pill next to Order ID as per design */}
+                          <div className="flex items-center gap-2 flex-wrap mb-1">
+                            <p className="text-[13px] font-black text-gray-700 tracking-widest uppercase">ORDER #{o.id || 'N/A'}</p>
+                            <span className="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded text-[9px] font-bold border border-gray-200">
+                               Sold By: {safeParseJSON(o.meta, {})?.sellerName || 'Nayika Naari'}
+                            </span>
+                          </div>
+                          <p className="text-xs font-bold text-gray-500">{safeFormatDate(o.createdAt)}</p>
                         </div>
-                        <div className="text-right">
+                        <div className="text-right shrink-0">
                           <p className={`font-black text-[22px] leading-none ${isCancelled ? 'text-gray-500 line-through' : 'text-[#008A00]'}`}>₹{finalAmt}</p>
                         </div>
                       </div>
                       
-                      {/* 🌟 UPDATED: Box, Pcs & Dispatch Date logic */}
                       <div className="flex flex-col bg-[#F8F9FA] p-3 rounded-xl mb-3 border border-gray-100 gap-2">
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-4 text-sm font-bold text-gray-700">
@@ -1749,7 +1923,6 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
                             <div className="flex items-center gap-1.5"><SlidersHorizontal size={16} className="text-gray-500"/> {o.pcs} Pcs</div>
                           </div>
                           <div className="flex items-center gap-2">
-                            {/* 🌟 CONDITIONAL DISPATCH DATE */}
                             {(o.status === 'Confirmed' && safeParseJSON(o.meta, {})?.expectedDispatch) && (
                               <span className="text-[9px] font-bold text-purple-600 bg-purple-50 px-2 py-1 rounded border border-purple-100 flex items-center gap-1">
                                 <Truck size={10} />
@@ -1789,9 +1962,7 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
                              Pay & Upload ₹100 Payment Screenshot
                            </p>
                            
-                           {/* 🌟 NAYA: Full Width App Chooser (flex-1 ensures equal neat spacing) */}
                            <div className="flex w-full bg-white border border-blue-200 rounded-lg overflow-hidden shadow-sm">
-                             {/* GPay Button */}
                              <button onClick={(e) => {
                                  e.stopPropagation();
                                  window.location.href = `tez://upi/pay?pa=gpay-11165292302@okbizaxis&pn=Nayika%20Naari&tn=${currentUser?.name}_${currentUser?.phone}&am=${o.advance}&cu=INR`;
@@ -1801,7 +1972,6 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
                                GPay
                              </button>
 
-                             {/* PhonePe Button */}
                              <button onClick={(e) => {
                                  e.stopPropagation();
                                  window.location.href = `phonepe://pay?pa=gpay-11165292302@okbizaxis&pn=Nayika%20Naari&tn=${currentUser?.name}_${currentUser?.phone}&am=${o.advance}&cu=INR`;
@@ -1811,7 +1981,6 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
                                PhonePe
                              </button>
 
-                             {/* Paytm Button */}
                              <button onClick={(e) => {
                                  e.stopPropagation();
                                  window.location.href = `paytmmp://pay?pa=gpay-11165292302@okbizaxis&pn=Nayika%20Naari&tn=${currentUser?.name}_${currentUser?.phone}&am=${o.advance}&cu=INR`;
@@ -1860,6 +2029,9 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
                       {selectedOrder.status}
                     </span>
                     <p className="text-sm text-gray-500 font-bold mt-3">{safeFormatDate(selectedOrder.createdAt)}</p>
+                    <span className="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded text-[9px] font-bold border border-gray-200">
+                               Sold By: {safeParseJSON(selectedOrder.meta, {})?.sellerName || 'Nayika Naari'}
+                            </span>
                   </div>
                   
                   <div className="text-right">
@@ -1869,7 +2041,6 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
                   </div>
                 </div>
 
-                {/* 🌟 NAYA: Delivery Address & Dispatch Info Box */}
                 <div className="mt-2 mx-4 bg-gray-50 p-4 rounded-xl border border-gray-200 shadow-sm">
                   <h3 className="text-[10px] font-black text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-1">
                     <MapPin size={12} /> Delivery Details
@@ -1927,12 +2098,8 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
                          )}
                       </div>
                       
-                      {/* 🌟 NAYA: Flex box jisme App Chooser aur Upload SS hain */}
                       <div className="shrink-0 flex items-center gap-2">
-                         
-                         {/* 🌟 WORKING HACK: Custom App Schemes (GPay, PhonePe, Paytm) */}
                          <div className="flex bg-white border border-blue-200 rounded-lg overflow-hidden shadow-sm">
-                           {/* GPay Button */}
                            <button onClick={(e) => {
                                e.stopPropagation();
                                window.location.href = `tez://upi/pay?pa=gpay-11165292302@okbizaxis&pn=Nayika%20Naari&tn=${currentUser?.name}_${currentUser?.phone}&am=${selectedOrder.advance}&cu=INR`;
@@ -1942,7 +2109,6 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
                              GPay
                            </button>
 
-                           {/* PhonePe Button */}
                            <button onClick={(e) => {
                                e.stopPropagation();
                                window.location.href = `phonepe://pay?pa=gpay-11165292302@okbizaxis&pn=Nayika%20Naari&tn=${currentUser?.name}_${currentUser?.phone}&am=${selectedOrder.advance}&cu=INR`;
@@ -1952,7 +2118,6 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
                              PhnPe
                            </button>
 
-                           {/* Paytm Button */}
                            <button onClick={(e) => {
                                e.stopPropagation();
                                window.location.href = `paytmmp://pay?pa=gpay-11165292302@okbizaxis&pn=Nayika%20Naari&tn=${currentUser?.name}_${currentUser?.phone}&am=${selectedOrder.advance}&cu=INR`;
@@ -1963,7 +2128,6 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
                            </button>
                          </div>
 
-                         {/* Purana Upload SS Button */}
                          <input type="file" id="update-ss" className="hidden" accept="image/*" onChange={uploadOrderScreenshot} />
                          <label htmlFor="update-ss" className="bg-gray-900 text-white px-3 py-2 rounded-lg text-[10px] font-black cursor-pointer active:scale-95 transition-transform flex items-center gap-1 m-0">
                             {isUploadingScreenshot ? <Loader2 size={12} className="animate-spin" /> : <UploadCloud size={12} />} 
@@ -2008,13 +2172,16 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
                           {group.items.map((item: any) => {
                             const hasChanged = item.remainingQty !== null && item.remainingQty !== undefined && item.remainingQty !== item.qty;
                             const finalQty = hasChanged ? item.remainingQty : item.qty;
+                            const isOOS = item.remainingQty === 0 && item.qty > 0;
                             
                             return (
-                              <div key={item.id} className="flex justify-between items-center text-sm font-bold bg-white border border-gray-100 p-2 rounded-lg">
+                              <div key={item.id} className={`flex justify-between items-center text-sm font-bold bg-white border p-2 rounded-lg ${isOOS ? 'border-red-100 opacity-60' : 'border-gray-100'}`}>
                                 <span className="w-10 text-gray-900">{item.size}</span>
                                 
                                 <div className="flex-1 flex flex-col items-center justify-center text-[11px]">
-                                  {hasChanged ? (
+                                  {isOOS ? (
+                                      <span className="text-red-500 font-black bg-red-50 px-2 rounded border border-red-200">OUT OF STOCK</span>
+                                  ) : hasChanged ? (
                                      <>
                                        <span className="text-gray-400 line-through">Orig: {item.qty}</span>
                                        <span className="text-orange-600 font-black bg-orange-50 px-1.5 rounded">New: {finalQty}</span>
@@ -2086,6 +2253,104 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
              )}
            </div>
         )}
+
+        {/* 🌟 NAYA: MULTI-SELECT FILTERS SHEET */}
+      {isFilterSheetOpen && (
+        <div className="fixed inset-0 z-[5000] flex justify-end flex-col">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsFilterSheetOpen(false)}></div>
+          <div className="bg-white w-full max-w-[450px] mx-auto rounded-t-[2rem] relative z-10 animate-in slide-in-from-bottom-full duration-300 shadow-2xl flex flex-col h-[85vh] border-x border-gray-200">
+             
+             <div className="flex justify-between items-center p-5 border-b border-gray-100 shrink-0">
+               <h3 className="font-black text-lg text-gray-900 uppercase tracking-widest">Filters</h3>
+               <button onClick={() => setIsFilterSheetOpen(false)} className="w-8 h-8 flex items-center justify-center bg-gray-100 rounded-full text-gray-500 hover:bg-gray-200"><X size={18}/></button>
+             </div>
+
+             <div className="flex flex-1 overflow-hidden">
+                <div className="w-1/3 bg-gray-50 flex flex-col border-r border-gray-100 pt-2">
+                   {/* 🌟 FIX: Added dynamic counts to each filter tab */}
+                   {['Category', 'Price', 'Seller'].map(tab => {
+                      let count = 0;
+                      if (tab === 'Category') count = tempFilters.subcategories.length;
+                      if (tab === 'Price') count = tempFilters.priceRanges.length;
+                      if (tab === 'Seller') count = tempFilters.sellers.length;
+
+                      return (
+                        <button 
+                           key={tab}
+                           onClick={() => setActiveFilterTab(tab)}
+                           className={`py-4 px-4 text-left text-xs font-black uppercase tracking-wider relative transition-all flex items-center justify-between gap-1 ${activeFilterTab === tab ? 'bg-white text-gray-900 shadow-[-5px_0_10px_rgba(0,0,0,0.02)]' : 'text-gray-500'}`}
+                        >
+                           {activeFilterTab === tab && <div className="absolute left-0 top-0 bottom-0 w-1.5 rounded-r" style={{backgroundColor: theme.primary}}></div>}
+                           <span>{tab}</span>
+                           {count > 0 && (
+                              <span className="w-4 h-4 shrink-0 rounded-full flex items-center justify-center text-[9px] font-black text-white shadow-sm" style={{backgroundColor: theme.primary}}>
+                                {count}
+                              </span>
+                           )}
+                        </button>
+                      )
+                   })}
+                </div>
+                
+                <div className="w-2/3 flex flex-col bg-white overflow-y-auto p-5 space-y-5">
+                {/* DYNAMIC CATEGORIES */}
+                   {activeFilterTab === 'Category' && filterOptions.subcats.map(subcat => (
+                      <div key={subcat} onClick={() => toggleTempFilter('subcategories', subcat)} className="flex items-center gap-3 cursor-pointer group">
+                         <div className={`w-4 h-4 rounded-[4px] border-2 flex items-center justify-center transition-colors ${tempFilters.subcategories.includes(subcat) ? 'border-transparent' : 'border-gray-300 group-hover:border-gray-400'}`} style={tempFilters.subcategories.includes(subcat) ? {backgroundColor: theme.primary} : {}}>
+                            {tempFilters.subcategories.includes(subcat) && <CheckCircle2 size={12} className="text-white" strokeWidth={3} />}
+                         </div>
+                         <span className={`text-[13px] font-bold ${tempFilters.subcategories.includes(subcat) ? 'text-gray-900' : 'text-gray-600'}`}>{subcat}</span>
+                      </div>
+                   ))}
+                   {/* DYNAMIC PRICE RANGES */}
+                   {activeFilterTab === 'Price' && filterOptions.prices.map(price => (
+                      <div key={price} onClick={() => toggleTempFilter('priceRanges', price)} className="flex items-center gap-3 cursor-pointer group">
+                         <div className={`w-4 h-4 rounded-[4px] border-2 flex items-center justify-center transition-colors ${tempFilters.priceRanges.includes(price) ? 'border-transparent' : 'border-gray-300 group-hover:border-gray-400'}`} style={tempFilters.priceRanges.includes(price) ? {backgroundColor: theme.primary} : {}}>
+                            {tempFilters.priceRanges.includes(price) && <CheckCircle2 size={12} className="text-white" strokeWidth={3} />}
+                         </div>
+                         <span className={`text-[13px] font-bold ${tempFilters.priceRanges.includes(price) ? 'text-gray-900' : 'text-gray-600'}`}>₹{price.split('-')[0]} - ₹{price.split('-')[1]}</span>
+                      </div>
+                   ))}
+
+                   {/* DYNAMIC SELLERS */}
+                   {activeFilterTab === 'Seller' && filterOptions.sellers.map(seller => (
+                      <div key={seller} onClick={() => toggleTempFilter('sellers', seller)} className="flex items-center gap-3 cursor-pointer group">
+                         <div className={`w-4 h-4 rounded-[4px] border-2 flex items-center justify-center transition-colors ${tempFilters.sellers.includes(seller) ? 'border-transparent' : 'border-gray-300 group-hover:border-gray-400'}`} style={tempFilters.sellers.includes(seller) ? {backgroundColor: theme.primary} : {}}>
+                            {tempFilters.sellers.includes(seller) && <CheckCircle2 size={12} className="text-white" strokeWidth={3} />}
+                         </div>
+                         <span className={`text-[13px] font-bold ${tempFilters.sellers.includes(seller) ? 'text-gray-900' : 'text-gray-600'}`}>{seller}</span>
+                      </div>
+                   ))}
+
+                   
+                </div>
+             </div>
+
+             <div className="p-4 border-t border-gray-100 flex items-center gap-3 shrink-0 bg-white shadow-[0_-10px_20px_rgba(0,0,0,0.03)]">
+                {/* 🌟 FIX: Added total count of applied filters to Clear All button */}
+                {(() => {
+                   const totalFilters = tempFilters.subcategories.length + tempFilters.sellers.length + tempFilters.priceRanges.length;
+                   return (
+                      <>
+                        <button 
+                          onClick={() => setTempFilters({ subcategories: [], sellers: [], priceRanges: [] })}
+                          className="flex-1 py-3.5 rounded-xl border border-gray-200 text-gray-600 font-black text-[11px] uppercase tracking-widest active:bg-gray-50 transition-colors flex items-center justify-center gap-1.5"
+                        >
+                           Clear All {totalFilters > 0 && <span className="text-[10px] text-gray-400 font-bold bg-gray-100 px-1.5 py-0.5 rounded-md">({totalFilters})</span>}
+                        </button>
+                        <button 
+                          onClick={() => { setAppliedFilters(tempFilters); setIsFilterSheetOpen(false); }}
+                          className="flex-1 py-3.5 rounded-xl text-white font-black text-[11px] uppercase tracking-widest active:scale-95 transition-transform btn-premium"
+                        >
+                           Apply Filters
+                        </button>
+                      </>
+                   )
+                })()}
+             </div>
+          </div>
+        </div>
+      )}
       </main>
 
       {/* --- SIZES EDIT SHEET --- */}
@@ -2102,7 +2367,10 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
         
         let editSheetTotal = 0;
         for (const [size, qtyPieces] of Object.entries(sizeQuantities)) {
-          if (qtyPieces > 0) editSheetTotal += qtyPieces * (productData.cost + getExtraPrice(size));
+          // 🌟 FIX: Ignore OOS sizes from Total calculation
+          if (qtyPieces > 0 && !editingGroup.oosSizes?.includes(size)) {
+             editSheetTotal += qtyPieces * (productData.cost + getExtraPrice(size));
+          }
         }
 
         return (
@@ -2129,12 +2397,16 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
                     const extraPrice = getExtraPrice(size);
                     const qtyPieces = sizeQuantities[size] || 0;
                     const isSelected = qtyPieces > 0;
+                    const isOOS = editingGroup.oosSizes?.includes(size);
+
                     return (
-                      <div key={size} className={`flex justify-between items-center py-4 mb-3 rounded-xl border px-4 ${isSelected ? 'bg-[#FFE4EB]/30' : 'border-gray-200'}`} style={isSelected ? {borderColor: theme.primary} : {}}>
+                      // 🌟 FIX: OOS row ko opacity-50 aur unclickable (pointer-events-none) kar diya
+                      <div key={size} className={`flex justify-between items-center py-4 mb-3 rounded-xl border px-4 ${isOOS ? 'opacity-50 pointer-events-none bg-gray-50' : isSelected ? 'bg-[#FFE4EB]/30' : 'border-gray-200'}`} style={isSelected && !isOOS ? {borderColor: theme.primary} : {}}>
                         <div className="flex flex-col">
                           <div className="flex items-center gap-2">
                              <p className="font-black text-[18px] leading-tight" style={isSelected ? {color: theme.primary} : {color: '#111827'}}>{size}</p>
-                             {extraPrice > 0 && <span className="text-[11px] bg-gray-100 text-gray-700 px-2 py-0.5 rounded font-black border border-gray-200">+₹{extraPrice}</span>}
+                             {isOOS && <span className="text-[9px] bg-red-50 text-red-600 px-1.5 py-0.5 rounded font-black border border-red-200">OOS</span>}
+                             {!isOOS && extraPrice > 0 && <span className="text-[11px] bg-gray-100 text-gray-700 px-2 py-0.5 rounded font-black border border-gray-200">+₹{extraPrice}</span>}
                           </div>
                           <p className="text-sm text-gray-500 font-bold mt-1">{boxSize} Pcs Box</p>
                         </div>
@@ -2180,6 +2452,35 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
         )
       })()}
 
+  {/* --- SELLER SHEET --- */}
+      {isSellerSheetOpen && (
+        <div className="fixed inset-0 z-[100] flex justify-end flex-col">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setIsSellerSheetOpen(false)}></div>
+          <div className="bg-white w-full max-w-[450px] mx-auto p-5 rounded-t-[2rem] relative z-10 animate-in slide-in-from-bottom-full duration-300 shadow-2xl">
+             <button onClick={() => setIsSellerSheetOpen(false)} className="absolute top-4 right-4 text-gray-400"><X size={20}/></button>
+             <h3 className="font-black text-lg mb-4 text-gray-900">Select Seller Cart</h3>
+            <div className="space-y-2 max-h-[50vh] overflow-y-auto pr-2 pb-4">
+                {cartSellers.map(seller => {
+                    const isSelected = activeCartSeller === seller;
+                    const productCount = new Set(cart.filter(i => (i.seller || 'Nayika Naari') === seller).map(i => i.id)).size;
+
+                    return (
+                      <button 
+                         key={seller}
+                         onClick={() => { setActiveCartSeller(seller); setIsSellerSheetOpen(false); }}
+                         className={`w-full text-left p-4 rounded-xl font-black text-sm border flex justify-between items-center transition-all active:scale-95 ${isSelected ? 'text-white border-transparent shadow-md' : 'bg-gray-50 text-gray-700 border-gray-200 hover:bg-gray-100'}`}
+                         style={isSelected ? { backgroundColor: theme.primary } : {}}
+                      >
+                         <span>{seller} <span className={`text-xs ml-1 font-bold ${isSelected ? 'text-white/80' : 'text-gray-500'}`}>({productCount} items)</span></span>
+                         {isSelected && <CheckCircle2 size={18} className="text-white animate-in zoom-in duration-200"/>}
+                      </button>
+                    )
+                })}
+             </div>
+          </div>
+        </div>
+      )}
+
   {/* --- ADDRESS SHEET --- */}
       {activeSheet === 'address' && (
         <div className="fixed inset-0 z-[100] flex justify-end flex-col">
@@ -2198,7 +2499,6 @@ className="w-full h-auto max-h-[85vh] object-contain transition-transform durati
                <textarea placeholder="Complete Address" value={addressData.address} onChange={e => setAddressData({...addressData, address: e.target.value})} className="input-field h-24" />
             </div>
             
-            {/* 🌟 YAHAN SIRF EK HI BUTTON RAHEGA AB */}
             <button 
               onClick={handleUpdateAddress} 
               disabled={loading}

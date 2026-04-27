@@ -78,7 +78,6 @@ export default function SellerDashboard() {
   const [productsWithInsights, setProductsWithInsights] = useState<Set<number>>(new Set());
   const [productFilter, setProductFilter] = useState('All');
 
-  // Address Sheet States
   const [isAddressSheetOpen, setIsAddressSheetOpen] = useState(false);
   const [addressForm, setAddressForm] = useState({ address: '', city: '', state: '', pincode: '' });
   const [isSavingAddress, setIsSavingAddress] = useState(false);
@@ -113,47 +112,63 @@ export default function SellerDashboard() {
   const [selectedProductForAdd, setSelectedProductForAdd] = useState<any>(null);
   const [addSizeConfig, setAddSizeConfig] = useState<any>({});
 
+  // 🌟 FIX: GLOBAL ADMIN CHECK
+  const isAdmin = currentUser?.role === 'admin' || currentUser?.user_type === 'admin' || currentUser?.user_type?.includes('admin') || currentUser?.phone == 9758008624;
+
   const calculateFinalRate = (product: any, sizeName: string, userObj: any) => {
     const productMeta = safeParseJSON(product.meta, {});
     const extraPrice = Number(productMeta?.attributes?.available_sizes?.[sizeName]?.extra_price || 0);
-    
-    // 🌟 REVERT: Cost ko wapas base bana diya
     const baseCost = Number(product.cost || 0) + extraPrice; 
-    
     const discountPercent = Number(userObj?.discount_percent || safeParseJSON(userObj?.meta, {})?.discount_percent || 0);
-    
-    // 🌟 Logic: Cost - (Discount% of Cost)
     const discountAmount = baseCost * (discountPercent / 100);
     const finalRate = baseCost - discountAmount;
-    
     return Number(finalRate.toFixed(2)); 
   };
 
   const fetchDashboardStats = async () => {
     try {
+      let sellerProductIds = new Set();
+      if (!isAdmin && currentUser) {
+        const { data: myProds } = await supabase.from('products').select('id').eq('seller', currentUser?.name);
+        sellerProductIds = new Set(myProds?.map((p:any) => p.id) || []);
+      }
+
+      let orderIdsForSeller = new Set();
+      if (!isAdmin && currentUser) {
+         const { data: od } = await supabase.from('order_details').select('orderid, productid');
+         orderIdsForSeller = new Set(od?.filter((d:any) => sellerProductIds.has(d.productid)).map((d:any) => d.orderid) || []);
+      }
+
       const today = new Date(); today.setHours(0, 0, 0, 0); 
       const startOfTodayMs = today.getTime(); const startOfTodayISO = today.toISOString(); 
       const lastWeek = new Date(today); lastWeek.setDate(lastWeek.getDate() - 7);
       const startOfWeekMs = lastWeek.getTime(); const startOfWeekISO = lastWeek.toISOString(); 
 
       const [{ data: oData }, { data: uData }, { data: cData }] = await Promise.all([
-        supabase.from('orders').select('userid, createdAt').gte('createdAt', startOfWeekISO),
-        supabase.from('users').select('created_at, meta'),
-        supabase.from('cart_items').select('user_id, updated_at').gte('updated_at', startOfWeekISO)
+        supabase.from('orders').select('id, userid, createdAt').gte('createdAt', startOfWeekISO),
+        supabase.from('users').select('id, created_at, meta'),
+        supabase.from('cart_items').select('user_id, updated_at, product_id').gte('updated_at', startOfWeekISO)
       ]);
+
+      const validOrders = isAdmin ? (oData || []) : (oData || []).filter(o => orderIdsForSeller.has(o.id));
+      const validCarts = isAdmin ? (cData || []) : (cData || []).filter(c => sellerProductIds.has(c.product_id));
 
       let tActive = 0, tNew = 0, wActive = 0, wNew = 0;
       let tBuyers = new Set(), wBuyers = new Set(), tOrders = 0, wOrders = 0, tCarts = new Set(), wCarts = new Set();
 
-      (oData || []).forEach(o => {
+      validOrders.forEach(o => {
         wOrders++; wBuyers.add(o.userid);
         if (new Date(o.createdAt).getTime() >= startOfTodayMs) { tOrders++; tBuyers.add(o.userid); }
       });
-      (cData || []).forEach(c => {
+      validCarts.forEach(c => {
         wCarts.add(c.user_id);
         if (new Date(c.updated_at).getTime() >= startOfTodayMs) { tCarts.add(c.user_id); }
       });
+      
+      const sellerUserIds = new Set([...wBuyers, ...wCarts]);
+
       (uData || []).forEach(u => {
+        if (!isAdmin && !sellerUserIds.has(u.id)) return; 
         if (u.created_at) {
           const ct = new Date(u.created_at).getTime(); 
           if (ct >= startOfWeekMs) wNew++;
@@ -178,9 +193,7 @@ export default function SellerDashboard() {
 
   useEffect(() => {
     if (currentUser) {
-      // 🌟 FIX: Categories ko fetch karne ka function call kar diya hai
       fetchCategories(); 
-      
       if (view === 'dashboard') { fetchMyProducts(); fetchOrders(); fetchDashboardStats(); }
       else if (view === 'orders') { fetchOrders(); }
       else if (view === 'products') { fetchMyProducts(); }
@@ -204,7 +217,11 @@ export default function SellerDashboard() {
 
   const fetchMyProducts = async () => {
     setLoading(true);
-    const { data } = await supabase.from('products').select('*').eq('seller', currentUser?.name);
+    let query = supabase.from('products').select('*');
+    if (!isAdmin) {
+       query = query.eq('seller', currentUser?.name);
+    }
+    const { data } = await query;
     if (data && data.length > 0) {
       const pIds = data.map((p: any) => p.id);
       const [ {data: cData}, {data: oData} ] = await Promise.all([
@@ -230,37 +247,70 @@ export default function SellerDashboard() {
 
   const fetchOrders = async () => {
     setLoading(true);
+    let orderIdsForSeller = new Set();
+    if (!isAdmin) {
+       const { data: sp } = await supabase.from('products').select('id').eq('seller', currentUser?.name);
+       const sellerProductIds = new Set(sp?.map(p => p.id) || []);
+       const { data: od } = await supabase.from('order_details').select('orderid, productid');
+       orderIdsForSeller = new Set(od?.filter(d => sellerProductIds.has(d.productid)).map(d => d.orderid) || []);
+    }
+
     const { data: ordersData } = await supabase.from('orders').select('*').order('createdAt', { ascending: false });
-    if (ordersData && ordersData.length > 0) {
-      const userIds = [...new Set(ordersData.map(o => o.userid).filter(Boolean))]; 
+    let filteredOrders = ordersData || [];
+    
+    if (!isAdmin) {
+       filteredOrders = filteredOrders.filter(o => orderIdsForSeller.has(o.id));
+    }
+
+    if (filteredOrders && filteredOrders.length > 0) {
+      const userIds = [...new Set(filteredOrders.map(o => o.userid).filter(Boolean))]; 
       let userMap = new Map();
       if (userIds.length > 0) {
         const { data: usersData } = await supabase.from('users').select('id, name').in('id', userIds);
         usersData?.forEach(u => { userMap.set(String(u.id), u.name); userMap.set(Number(u.id), u.name); });
       }
-      setOrders(ordersData.map(o => ({ ...o, buyerName: userMap.get(o.userid) || userMap.get(String(o.userid)) || 'Unknown Buyer' })));
+      setOrders(filteredOrders.map(o => ({ ...o, buyerName: userMap.get(o.userid) || userMap.get(String(o.userid)) || 'Unknown Buyer' })));
     } else { setOrders([]); }
     setLoading(false);
   };
 
   const fetchUsersData = async () => {
     setLoading(true);
+    let sellerProductIds = new Set();
+    let orderIdsForSeller = new Set();
+    
+    if (!isAdmin) {
+       const { data: sp } = await supabase.from('products').select('id').eq('seller', currentUser?.name);
+       sellerProductIds = new Set(sp?.map(p => p.id) || []);
+       const { data: od } = await supabase.from('order_details').select('orderid, productid');
+       orderIdsForSeller = new Set(od?.filter(d => sellerProductIds.has(d.productid)).map(d => d.orderid) || []);
+    }
+
     const [{ data: users }, { data: allOrders }, { data: cart }] = await Promise.all([
       supabase.from('users').select('*').order('id', { ascending: false }),
       supabase.from('orders').select('id, userid, createdAt'),
-      supabase.from('cart_items').select('user_id, product_id, qty, size, updated_at, products(name, subcategory, img, meta, cost)').eq('status', 0)
+      supabase.from('cart_items').select('user_id, product_id, qty, size, updated_at, products(name, subcategory, img, meta, cost, seller)').eq('status', 0)
     ]);
 
     if (users) {
       const enrichedUsers = users.map(u => {
-        const uOrders = (allOrders || []).filter(o => o.userid === u.id);
-        const uCart = (cart || []).filter(c => c.user_id === u.id);
+        const uOrders = (allOrders || []).filter(o => o.userid === u.id && (isAdmin || orderIdsForSeller.has(o.id)));
+        const uCart = (cart || []).filter(c => {
+            if (c.user_id !== u.id) return false;
+            if (isAdmin) return true;
+            const p = Array.isArray(c.products) ? c.products[0] : c.products;
+            return (p?.seller === currentUser?.name) || sellerProductIds.has(c.product_id);
+        });
+
+        if (!isAdmin && uOrders.length === 0 && uCart.length === 0) return null;
+
         const lastOrder = uOrders.length > 0 ? uOrders.reduce((a, b) => new Date(a.createdAt) > new Date(b.createdAt) ? a : b).createdAt : null;
         const lastCart = uCart.length > 0 ? uCart.reduce((a, b) => new Date(a.updated_at) > new Date(b.updated_at) ? a : b).updated_at : null;
         const totalBoxes = uCart.reduce((acc: number, c: any) => acc + Math.ceil(c.qty / (safeParseJSON(Array.isArray(c.products) ? c.products[0]?.meta : c.products?.meta, {})?.attributes?.box_size?.[0] || 6)), 0);
         return { ...u, orderCount: uOrders.length, lastOrder, lastCart, cartUnique: new Set(uCart.map(c => c.product_id)).size, cartPcs: uCart.reduce((acc, c) => acc + c.qty, 0), cartBoxes: totalBoxes, lastSeen: safeParseJSON(u.meta, {}).lastSeen || null, uCart };
-      });
-      enrichedUsers.sort((a, b) => {
+      }).filter(Boolean);
+
+      enrichedUsers.sort((a: any, b: any) => {
         const getLatest = (user:any) => { const dates = [user.lastSeen, user.lastCart, user.lastOrder].filter(Boolean).map(d=>new Date(d).getTime()); return dates.length > 0 ? Math.max(...dates) : 0; };
         return getLatest(b) - getLatest(a);
       });
@@ -295,7 +345,6 @@ export default function SellerDashboard() {
     setView('order_detail');
     setLoading(true);
     
-    // 🌟 FIX: Clear any draft state from "New Order" flow before opening an existing order
     setDraftUser(null);
     setDraftItems([]);
     setNewOrderItems([]); 
@@ -386,7 +435,6 @@ export default function SellerDashboard() {
             rate: item.rate,
             userid: selectedOrder.userid, 
             box: calculatedBoxes,         
-            // 🌟 FIX: Add MRP into meta when saving to DB
             meta: JSON.stringify({ 
                 name: item.product.name, 
                 img: safeParseJSON(item.product.img, {images:[]}).images[0] || '',
@@ -547,7 +595,6 @@ export default function SellerDashboard() {
         <button onClick={() => router.replace('/')} className="text-[10px] font-bold bg-white/10 px-3 py-1.5 rounded border border-white/20 active:scale-95 flex items-center gap-1">BUYER VIEW <ChevronRight size={12}/></button>
       </header>
 
-      {/* 🌟 ON SCROLL ADDED TO MAIN */}
       <main className="flex-1 w-full overflow-y-auto scrollbar-hide" onScroll={handleGlobalScroll}>
         
         {view === 'dashboard' && (
@@ -620,7 +667,8 @@ export default function SellerDashboard() {
                         <div>
                           <h3 className="font-black text-gray-900 text-[15px]">{u.name} <span className="text-[10px] text-green-600 bg-green-50 px-1.5 py-0.5 rounded ml-1">-{u.discount_percent || 0}%</span></h3>
                           <p className="text-[10px] font-bold text-gray-500 mt-0.5"><MapPin size={10} className="inline mr-0.5 mb-0.5"/> {u.city || 'N/A'}, {u.state || 'N/A'}</p>
-                          {u.password && (
+                          {/* 🌟 FIX: Only Admin can see the password */}
+                          {isAdmin && u.password && (
                             <div onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(u.password); showToast("Password Copied! 🔐"); }} className="flex items-center gap-2 mt-2 bg-red-50/60 px-2 py-1.5 rounded-md border border-red-100 cursor-pointer w-fit">
                               <Lock size={10} className="text-red-500" /><span className="text-[10px] font-bold text-gray-600">Pass: <span className="font-mono text-red-700">{u.password}</span></span><Copy size={12} className="text-red-400 ml-1" />
                             </div>
@@ -801,8 +849,7 @@ export default function SellerDashboard() {
         {view === 'order_detail' && selectedOrder && (
           <div className="animate-in slide-in-from-right duration-300 flex flex-col min-h-full bg-[#F8F9FA] pb-24">
             
-            {/* 🌟 NAYA: Proper Print Invoice Layout Styles */}
-           <style dangerouslySetInnerHTML={{__html: `
+            <style dangerouslySetInnerHTML={{__html: `
               @media print {
                 @page { size: A4 portrait; margin: 15mm; }
                 body, html { background-color: white !important; width: 100% !important; margin: 0 !important; padding: 0 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
@@ -857,9 +904,7 @@ export default function SellerDashboard() {
                     const qty = item.isNew ? item.qty : (editedQtys[item.id] !== undefined ? editedQtys[item.id] : (item.remainingQty ?? item.qty));
                     const meta = safeParseJSON(item.meta, {});
                     
-                    // 🌟 FIX: Agar order purana hai aur meta mein MRP nahi hai, toh live products list se fetch karo
                     const mrp = item.isNew ? item.product.mrp : (meta.mrp || myProducts.find(p => p.id === item.productid)?.mrp);
-                    
                     const name = item.isNew ? item.product.name : meta.name;
                     const amount = qty * item.rate;
 
@@ -913,7 +958,6 @@ export default function SellerDashboard() {
               <div className="flex justify-between items-start mb-2">
                 <div><h2 className="font-black text-gray-900 text-lg">{selectedOrder.buyerName}</h2><p className="text-[10px] text-gray-400 font-bold mt-1">{safeFormatDate(selectedOrder.createdAt)}</p></div>
                 <div className="flex items-center gap-2">
-                  {/* 🌟 NAYA: View Bill CTA */}
                   <button onClick={() => window.print()} className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2.5 py-1.5 rounded-md border border-blue-100 flex items-center gap-1.5 hover:bg-blue-100 active:scale-95"><FileText size={12} />Bill</button>
                   <button onClick={handleShareOrder} className="text-[10px] font-bold text-gray-600 bg-gray-50 px-2.5 py-1.5 rounded-md border border-gray-200 flex items-center gap-1.5"><Share2 size={12} /></button>
                   <select value={orderStatus} onChange={(e) => setOrderStatus(e.target.value)} className="text-[10px] font-black uppercase tracking-widest px-2 py-1.5 rounded-md shrink-0 h-fit outline-none border bg-gray-50"><option>Pending</option><option>Confirmed</option><option>Dispatched</option><option>Delivered</option><option>Cancelled</option></select>
@@ -965,7 +1009,6 @@ export default function SellerDashboard() {
                       <div className="p-3 bg-gray-50 border-b border-gray-200 flex gap-3 items-center">
                         <div className="w-12 h-12 bg-white rounded-lg border border-gray-200 p-0.5 shrink-0" onClick={() => setZoomOverlay({images: [group.img], currentIndex: 0})}><img src={group.img} className="w-full h-full object-cover rounded-md" alt="" /></div>
                         <h4 className="font-bold text-sm text-gray-900 truncate flex-1">{group.name}</h4>
-                        {/* Pencil Icon for Unsaved Drafts */}
                        {group.unsavedItems?.length > 0 && (
                            <button onClick={() => {
                               const p = group.product || group.unsavedItems[0].product;
@@ -1063,7 +1106,6 @@ export default function SellerDashboard() {
         )}
       </main>
 
-      {/* ── 🌟 LIVE TRUCK: MRP BASED DISCOUNT + NaN FIX ── */}
       {isCartSheetOpen && viewingUserCart && (() => {
         const rebuiltCart = viewingUserCart.map((item: any) => {
           const p = Array.isArray(item.products) ? item.products[0] : item.products;
@@ -1077,7 +1119,6 @@ export default function SellerDashboard() {
          const productMRP = Number(p.mrp || 0);
           const extraPrice = Number(sizesRaw[item.size]?.extra_price || 0);
           
-          // 🌟 REVERT: Cart mein bhi Cost ko base bana diya
           const baseCost = Number(p.cost || 0) + extraPrice; 
           
           const cartUserId = item.user_id;
@@ -1173,7 +1214,6 @@ export default function SellerDashboard() {
         );
       })()}
 
-      {/* ── 🌟 NEW BOTTOM SHEET: CREATE ORDER / ADD ITEM FLOW ── */}
       {isCreateOrderOpen && (
         <div className="fixed inset-0 z-[6000] flex justify-end flex-col print-hidden">
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => { setIsCreateOrderOpen(false); setSelectedProductForAdd(null); }}></div>
@@ -1446,7 +1486,6 @@ export default function SellerDashboard() {
         </div>
       )}
 
-      {/* ── 🌟 BOTTOM SHEET: CUSTOMER ADDRESS ── */}
       {isAddressSheetOpen && (
         <div className="fixed inset-0 z-[7000] flex justify-end flex-col print-hidden">
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsAddressSheetOpen(false)}></div>
@@ -1475,7 +1514,6 @@ export default function SellerDashboard() {
                       const val = e.target.value;
                       setAddressForm(prev => ({...prev, pincode: val}));
                       
-                      // 🌟 FIX: Auto Fetch City & State API
                       if(val.length === 6) {
                         try {
                           const res = await fetch(`https://api.postalpincode.in/pincode/${val}`);
@@ -1520,6 +1558,127 @@ export default function SellerDashboard() {
                 {isSavingAddress ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
                 {isSavingAddress ? 'Saving...' : 'Save & Continue'}
               </button>
+            </div>
+       </div>
+        </div>
+      )}
+
+      {activeSheet && editingProduct && (
+        <div className="fixed inset-0 z-[7000] flex justify-end flex-col print-hidden">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setActiveSheet(false)}></div>
+          <div className="bg-white w-full max-w-md mx-auto rounded-t-[2rem] relative z-10 animate-in slide-in-from-bottom-full duration-300 shadow-2xl flex flex-col max-h-[85vh]">
+            <div className="p-4 border-b border-gray-100 flex justify-between items-center shrink-0">
+              <h3 className="font-black text-gray-900 uppercase tracking-widest text-sm flex items-center gap-2">
+                <SlidersHorizontal size={18} className="text-blue-600"/> Edit Sizes Config
+              </h3>
+              <button onClick={() => setActiveSheet(false)} className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-gray-500 hover:bg-gray-200"><X size={16}/></button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+               <div className="flex items-center gap-3 mb-2">
+                 <img src={safeParseJSON(editingProduct.img, {images:[]}).images[0]} className="w-12 h-12 rounded border border-gray-200 object-cover" alt="" />
+                 <h4 className="font-bold text-sm text-gray-900">{editingProduct.name}</h4>
+               </div>
+               {Object.keys(editingSizeConfig).length === 0 ? (
+                  <p className="text-sm text-gray-500 text-center py-4">No sizes found.</p>
+               ) : (
+                  <div className="space-y-3">
+                    {Object.keys(editingSizeConfig).map((size) => (
+                        <div key={size} className="flex items-center justify-between bg-gray-50 p-3 rounded-xl border border-gray-200">
+                           <div className="font-black text-gray-800 w-12">{size}</div>
+                           <div className="flex items-center gap-2 flex-1">
+                             <span className="text-xs font-bold text-gray-400">+ ₹</span>
+                             <input type="number" value={editingSizeConfig[size].extra_price || ''} onChange={(e) => setEditingSizeConfig(prev => ({...prev, [size]: {...prev[size], extra_price: parseInt(e.target.value) || 0}}))} className="w-full max-w-[100px] bg-white border border-gray-300 rounded-lg px-3 py-1.5 text-sm font-bold text-gray-800 outline-none focus:border-blue-500" />
+                           </div>
+                           <button onClick={() => setEditingSizeConfig(prev => ({...prev, [size]: {...prev[size], is_active: !(editingSizeConfig[size].is_active !== false)}}))} className="text-gray-500 transition-colors">
+                             {(editingSizeConfig[size].is_active !== false) ? <ToggleRight size={28} className="text-green-500" /> : <ToggleLeft size={28} />}
+                           </button>
+                        </div>
+                    ))}
+                  </div>
+               )}
+            </div>
+            <div className="p-4 border-t border-gray-200 shrink-0">
+               <button onClick={saveVariantStatus} disabled={isUpdatingVariant} className="w-full bg-gray-900 text-white py-4 rounded-xl font-black uppercase tracking-widest text-xs shadow-md active:scale-95 flex justify-center items-center gap-2">
+                 {isUpdatingVariant ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+                 {isUpdatingVariant ? 'Saving...' : 'Save Updates'}
+               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {insightsSheetOpen && (
+        <div className="fixed inset-0 z-[7000] flex justify-end flex-col print-hidden">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setInsightsSheetOpen(false)}></div>
+          <div className="bg-[#F8F9FA] w-full max-w-md mx-auto rounded-t-[2rem] relative z-10 animate-in slide-in-from-bottom-full duration-300 shadow-2xl flex flex-col max-h-[85vh]">
+            <div className="p-4 border-b border-gray-200 bg-white rounded-t-[2rem] shrink-0 flex justify-between items-center">
+              <h3 className="font-black text-gray-900 uppercase tracking-widest text-sm flex items-center gap-2">
+                <TrendingUp size={18} className="text-purple-600"/> Product Insights
+              </h3>
+              <button onClick={() => setInsightsSheetOpen(false)} className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-gray-500 hover:bg-gray-200"><X size={16}/></button>
+            </div>
+            
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              {loadingInsights ? (
+                <div className="flex justify-center py-20"><Loader2 className="animate-spin text-purple-500" size={32} /></div>
+              ) : insightsData ? (
+                <>
+                  <div className="bg-white p-3 rounded-xl border border-gray-200 shadow-sm flex gap-3 items-center">
+                    <img src={safeParseJSON(insightsData.product.img, {images:[]}).images[0]} className="w-16 h-16 rounded-lg object-cover border border-gray-100" alt="" />
+                    <div>
+                      <h4 className="font-bold text-sm text-gray-900 leading-tight">{insightsData.product.name}</h4>
+                      <p className="text-[11px] font-bold text-gray-500 mt-0.5">MOQ Box: {insightsData.boxSize} Pcs</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="bg-blue-50 p-3 rounded-xl border border-blue-100">
+                      <p className="text-[10px] font-bold text-blue-600 uppercase tracking-wider">In Carts</p>
+                      <h4 className="font-black text-blue-900 text-xl mt-1">{Object.values(insightsData.cartSizes).reduce((a:any, b:any) => a+b, 0)} <span className="text-[10px] font-bold text-blue-700">Pcs</span></h4>
+                      <p className="text-[10px] text-blue-600 font-medium mt-1">Across {insightsData.uniqueCartUsers} Users</p>
+                    </div>
+                    <div className="bg-green-50 p-3 rounded-xl border border-green-100">
+                      <p className="text-[10px] font-bold text-green-600 uppercase tracking-wider">Ordered</p>
+                      <h4 className="font-black text-green-900 text-xl mt-1">{Object.values(insightsData.orderSizes).reduce((a:any, b:any) => a+b, 0)} <span className="text-[10px] font-bold text-green-700">Pcs</span></h4>
+                      <p className="text-[10px] text-green-600 font-medium mt-1">By {insightsData.uniqueOrderUsers} Buyers</p>
+                    </div>
+                  </div>
+
+                 <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                    <div className="bg-gray-50 p-2.5 border-b border-gray-200">
+                      <h4 className="text-[11px] font-black text-gray-700 uppercase tracking-widest">Size-wise Demand (in Boxes)</h4>
+                    </div>
+                    <div className="p-0">
+                      <table className="w-full text-left text-[11px]">
+                        <thead>
+                          <tr className="border-b border-gray-100 bg-gray-50/50 text-gray-500">
+                            <th className="p-2.5 font-bold">Size</th>
+                            <th className="p-2.5 font-bold text-center text-blue-600 bg-blue-50/30 border-l border-gray-100">Cart Box</th>
+                            <th className="p-2.5 font-bold text-center text-green-600 border-l border-gray-100">Order Box</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {Array.from(new Set([...Object.keys(insightsData.cartSizes), ...Object.keys(insightsData.orderSizes)])).map(size => {
+                            const s = size as string;
+                            const bSize = insightsData.boxSize || 6;
+                            
+                            const cartBoxes = Math.ceil((insightsData.cartSizes[s] || 0) / bSize);
+                            const orderBoxes = Math.ceil((insightsData.orderSizes[s] || 0) / bSize);
+
+                            return (
+                              <tr key={s} className="border-b border-gray-50 last:border-0 hover:bg-gray-50 transition-colors">
+                                <td className="p-2.5 font-black text-gray-800">{s}</td>
+                                <td className="p-2.5 text-center font-bold text-blue-700 bg-blue-50/30 border-l border-gray-100">{cartBoxes}</td>
+                                <td className="p-2.5 text-center font-bold text-green-700 border-l border-gray-100">{orderBoxes}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </>
+              ) : null}
             </div>
           </div>
         </div>
