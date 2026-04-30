@@ -12,6 +12,7 @@ import {
   Users, MessageCircle, ShoppingCart, TrendingUp, Calendar, Share2,
   Activity, UserPlus, ShoppingBag, FileText 
 } from 'lucide-react';
+import Image from 'next/image'; // 🌟 NAYA: Image Optimization ke liye
 
 const safeParseJSON = (data: any, fallback: any) => {
   if (!data) return fallback;
@@ -63,7 +64,38 @@ export default function SellerDashboard() {
   const [isSavingOrder, setIsSavingOrder] = useState(false);
   const [orderStatus, setOrderStatus] = useState('Pending');
   const [expectedDispatch, setExpectedDispatch] = useState(''); 
-  const [orderFilter, setOrderFilter] = useState('All');
+ const [orderFilter, setOrderFilter] = useState('All');
+  
+  // 🌟 NAYA: Seller Orders Toggle aur User Create ke states
+  const [showSellerOrders, setShowSellerOrders] = useState(false);
+  const [isCreateUserOpen, setIsCreateUserOpen] = useState(false);
+  const [isCreatingUser, setIsCreatingUser] = useState(false);
+  const [newUserForm, setNewUserForm] = useState({ name: '', phone: '', password: '', pincode: '', city: '', state: '', address: '' });
+  const [phoneError, setPhoneError] = useState(''); // 🌟 NAYA: Phone number exist check karne ke liye
+
+  const handleCreateUser = async () => {
+    // Check lagaya taaki error hone par button click na ho sake
+    if (phoneError) return showToast("Please use a different number!");
+    if (!newUserForm.name || !newUserForm.phone || !newUserForm.password || !newUserForm.pincode) return showToast("Name, Phone, Pass & Pincode required!");
+    setIsCreatingUser(true);
+    try {
+        const { error } = await supabase.from('users').insert([{
+            name: newUserForm.name,
+            phone: newUserForm.phone,
+            password: newUserForm.password,
+            pincode: newUserForm.pincode,
+            city: newUserForm.city,
+            state: newUserForm.state,
+            address: newUserForm.address,
+            meta: { createdBy: currentUser.id, sellerName: currentUser.name } // 🌟 FIX: Meta mein Seller details
+        }]);
+        if(error) throw error;
+        showToast("New Customer Added! ✅");
+        setIsCreateUserOpen(false);
+        setNewUserForm({ name: '', phone: '', password: '', pincode: '', city: '', state: '', address: '' });
+        fetchUsersData();
+    } catch(e: any) { alert(e.message); } finally { setIsCreatingUser(false); }
+  };
 
   const [usersList, setUsersList] = useState<any[]>([]);
   const [userSearchQuery, setUserSearchQuery] = useState('');
@@ -145,12 +177,14 @@ export default function SellerDashboard() {
       const startOfWeekMs = lastWeek.getTime(); const startOfWeekISO = lastWeek.toISOString(); 
 
       const [{ data: oData }, { data: uData }, { data: cData }] = await Promise.all([
-        supabase.from('orders').select('id, userid, createdAt').gte('createdAt', startOfWeekISO),
+        // 🌟 FIX: created_by select kiya dashboard query mein
+        supabase.from('orders').select('id, userid, createdAt, created_by').gte('createdAt', startOfWeekISO),
         supabase.from('users').select('id, created_at, meta'),
         supabase.from('cart_items').select('user_id, updated_at, product_id').gte('updated_at', startOfWeekISO)
       ]);
 
-      const validOrders = isAdmin ? (oData || []) : (oData || []).filter(o => orderIdsForSeller.has(o.id));
+      // 🌟 FIX: Sirf un orders ko gino jinke created_by null hain (Self placed)
+      const validOrders = (isAdmin ? (oData || []) : (oData || []).filter(o => orderIdsForSeller.has(o.id))).filter(o => o.created_by === null);
       const validCarts = isAdmin ? (cData || []) : (cData || []).filter(c => sellerProductIds.has(c.product_id));
 
       let tActive = 0, tNew = 0, wActive = 0, wNew = 0;
@@ -217,7 +251,8 @@ export default function SellerDashboard() {
 
   const fetchMyProducts = async () => {
     setLoading(true);
-    let query = supabase.from('products').select('*');
+    // 🌟 FIX: Faltu columns hataye
+    let query = supabase.from('products').select('id, name, subcategory, cost, mrp, meta, img, status, seller');
     if (!isAdmin) {
        query = query.eq('seller', currentUser?.name);
     }
@@ -255,7 +290,9 @@ export default function SellerDashboard() {
        orderIdsForSeller = new Set(od?.filter(d => sellerProductIds.has(d.productid)).map(d => d.orderid) || []);
     }
 
-    const { data: ordersData } = await supabase.from('orders').select('*').order('createdAt', { ascending: false });
+    // 🌟 FIX: Select queries optimized
+    // 🌟 FIX: created_by DB se fetch kiya
+    const { data: ordersData } = await supabase.from('orders').select('id, userid, amount, finalAmount, status, box, pcs, city, tracking, createdAt, created_by').order('createdAt', { ascending: false });
     let filteredOrders = ordersData || [];
     
     if (!isAdmin) {
@@ -287,7 +324,8 @@ export default function SellerDashboard() {
     }
 
     const [{ data: users }, { data: allOrders }, { data: cart }] = await Promise.all([
-      supabase.from('users').select('*').order('id', { ascending: false }),
+      // 🌟 FIX: 'address' aur 'pincode' wapas add kar diye taaki bottom sheet mein auto-fill ho sake
+      supabase.from('users').select('id, name, phone, city, state, address, pincode, password, discount_percent, meta, created_at').order('id', { ascending: false }),
       supabase.from('orders').select('id, userid, createdAt'),
       supabase.from('cart_items').select('user_id, product_id, qty, size, updated_at, products(name, subcategory, img, meta, cost, seller)').eq('status', 0)
     ]);
@@ -356,7 +394,7 @@ export default function SellerDashboard() {
     const orderMeta = safeParseJSON(updatedOrder.meta, {});
     setExpectedDispatch(orderMeta.expectedDispatch || '');
 
-    const { data: items } = await supabase.from('order_details').select('*').eq('orderid', updatedOrder.id);
+    const { data: items } = await supabase.from('order_details').select('id, productid, size, qty, remainingQty, rate, meta').eq('orderid', updatedOrder.id);
     if (items && items.length > 0) {
       const parsedItems = items.map(item => ({ ...item, meta: safeParseJSON(item.meta, {}) }));
       setOrderItems(parsedItems);
@@ -556,14 +594,32 @@ export default function SellerDashboard() {
   });
   
   const filteredOrders = orders.filter(o => {
-    return (o?.id?.toString().includes(searchQuery) || o?.buyerName?.toLowerCase().includes(searchQuery.toLowerCase()) || o?.city?.toLowerCase().includes(searchQuery.toLowerCase())) && (orderFilter === 'All' || o?.status === orderFilter);
+    // 🌟 FIX: Toggle ke base par filter (Seller Orders vs Buyer Orders)
+    const matchToggle = showSellerOrders ? (o.created_by !== null) : (o.created_by === null);
+    const matchSearch = o?.id?.toString().includes(searchQuery) || o?.buyerName?.toLowerCase().includes(searchQuery.toLowerCase()) || o?.city?.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchFilter = orderFilter === 'All' || o?.status === orderFilter;
+    
+    return matchToggle && matchSearch && matchFilter;
   });
 
   if (!currentUser) return null;
 
   return (
-    <div className="w-full max-w-md print:max-w-full print:w-full print:mx-0 print:border-none mx-auto bg-[#F8F9FA] print:bg-white min-h-screen font-sans text-gray-900 shadow-2xl print:shadow-none relative overflow-x-hidden print:overflow-visible flex flex-col pb-20 print:pb-0 border-x border-gray-100">
+    // 🌟 FIX: 'print:h-auto' aur 'print:block' add kiya, taaki print ke time screen stretch na ho
+    <div className="w-full max-w-md print:max-w-full print:w-full print:mx-0 print:border-none mx-auto bg-[#F8F9FA] print:bg-white h-[100dvh] print:h-auto font-sans text-gray-900 shadow-2xl print:shadow-none relative overflow-hidden print:overflow-visible flex flex-col print:block border-x border-gray-100">
       
+      {/* 🌟 NAYA: Print styles ko top par move kiya... */}  
+      {/* 🌟 NAYA: Print styles ko top par move kiya taaki app mein kahin se bhi bill nikal sake */}
+      <style dangerouslySetInnerHTML={{__html: `
+        @media print {
+          @page { size: A4 portrait; margin: 15mm; }
+          body, html { background-color: white !important; width: 100% !important; margin: 0 !important; padding: 0 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          .print-hidden, header, nav { display: none !important; }
+          main { overflow: visible !important; height: auto !important; padding: 0 !important; width: 100% !important; max-width: 100% !important; }
+          .shadow-sm, .shadow-2xl { box-shadow: none !important; border: none !important; }
+        }
+      `}} />
+
       {zoomOverlay && (
         <div className="fixed inset-0 z-[6000] bg-black/95 flex flex-col items-center justify-center backdrop-blur-sm">
           <button onClick={() => setZoomOverlay(null)} className="absolute top-6 right-6 p-3 bg-white/10 text-white rounded-full z-20"><X size={24} /></button>
@@ -595,7 +651,8 @@ export default function SellerDashboard() {
         <button onClick={() => router.replace('/')} className="text-[10px] font-bold bg-white/10 px-3 py-1.5 rounded border border-white/20 active:scale-95 flex items-center gap-1">BUYER VIEW <ChevronRight size={12}/></button>
       </header>
 
-      <main className="flex-1 w-full overflow-y-auto scrollbar-hide" onScroll={handleGlobalScroll}>
+      {/* 🌟 FIX: 'pb-20' yahan main container par add kiya */}
+      <main className="flex-1 w-full overflow-y-auto scrollbar-hide pb-20 print:pb-0" onScroll={handleGlobalScroll}>
         
         {view === 'dashboard' && (
           <div className="p-4 space-y-4 animate-in fade-in duration-300">
@@ -607,8 +664,9 @@ export default function SellerDashboard() {
               </div>
               <div onClick={() => setView('orders')} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-200 flex flex-col items-center justify-center text-center cursor-pointer active:scale-95 transition-transform">
                  <ClipboardList size={28} className="text-green-500 mb-2" />
-                 <h2 className="text-2xl font-black text-gray-900">{orders.length}</h2>
-                 <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Total Orders</p>
+                 {/* 🌟 FIX: Dashboard pe sirf NULL wale count honge */}
+                 <h2 className="text-2xl font-black text-gray-900">{orders.filter(o => o.created_by === null).length}</h2>
+                 <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Buyer Orders</p>
               </div>
             </div>
             
@@ -653,6 +711,10 @@ export default function SellerDashboard() {
                   <div className="absolute left-3 text-gray-400"><Search size={16} /></div>
                   <input type="text" placeholder="Search Mobile or Name..." className="w-full bg-gray-100 text-sm font-semibold rounded-xl pl-10 pr-4 py-3 outline-none" value={userSearchQuery} onChange={e => { setUserSearchQuery(e.target.value); setVisibleUsersCount(20); }} />
                 </div>
+                {/* 🌟 NAYA: User create karne ka button */}
+                <button onClick={() => setIsCreateUserOpen(true)} className="bg-gray-900 text-white p-3.5 rounded-xl active:scale-95 flex items-center justify-center shrink-0 shadow-sm">
+                   <UserPlus size={18} />
+                </button>
               </div>
             </div>
 
@@ -767,7 +829,10 @@ export default function SellerDashboard() {
                   const activeSizesCount = sizeKeys.filter(k => sizesRaw[k].is_active !== false).length;
                   return (
                     <div key={p.id} className="bg-white rounded-2xl p-3 border border-gray-200 shadow-sm flex gap-3 relative overflow-hidden">
-                      <div className="w-24 h-24 bg-gray-50 rounded-xl p-1 shrink-0 border border-gray-100 cursor-zoom-in" onClick={() => setZoomOverlay({images: imgData.images, currentIndex: 0})}><img src={imgData.images[0] || ''} className="w-full h-full object-cover rounded-lg mix-blend-multiply" alt="" /></div>
+                      {/* 🌟 FIX: Optimized Next Image */}
+                      <div className="relative w-24 h-24 bg-gray-50 rounded-xl p-1 shrink-0 border border-gray-100 cursor-zoom-in overflow-hidden" onClick={() => setZoomOverlay({images: imgData.images, currentIndex: 0})}>
+                        {imgData.images[0] && <Image src={imgData.images[0]} alt="" fill sizes="96px" className="object-cover rounded-lg mix-blend-multiply p-1" />}
+                      </div>
                       <div className="flex-1 flex flex-col justify-between py-1 overflow-hidden">
                         <div>
                           <div className="flex justify-between items-start gap-2"><h3 className="font-bold text-gray-900 text-sm truncate">{p.name}</h3><span className="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase shrink-0 border border-gray-200">{p.subcategory}</span></div>
@@ -791,7 +856,8 @@ export default function SellerDashboard() {
 
         {/* ── 🌟 VIEW 4: ORDERS LISTING ── */}
         {view === 'orders' && (
-          <div className="animate-in fade-in duration-300 flex flex-col min-h-full bg-[#F8F9FA]">
+          // 🌟 FIX: Yahan 'print:hidden' laga diya hai taaki bill print hote waqt ye list gayab ho jaye
+          <div className="animate-in fade-in duration-300 flex flex-col min-h-full bg-[#F8F9FA] print:hidden">
             <div className="p-3 bg-white border-b border-gray-200 flex flex-col gap-3 sticky top-0 z-30 shadow-sm">
               <div className="flex items-center gap-3 w-full">
                 <div className="flex flex-col items-center justify-center bg-[#E5F7ED] text-[#008A00] px-3 py-2 rounded-xl border border-green-200 shrink-0 shadow-sm">
@@ -803,14 +869,21 @@ export default function SellerDashboard() {
                     <div className="absolute left-3 text-gray-400"><Search size={16} /></div>
                     <input type="text" placeholder="Search orders..." className="w-full bg-gray-100 text-sm font-semibold rounded-xl pl-10 pr-4 py-3 outline-none" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
                   </div>
-                  <button 
-                    onClick={() => { 
-                      setDraftUser(null); setDraftItems([]); setCreateOrderStep('select_user'); setIsCreateOrderOpen(true); 
-                      if (usersList.length === 0) fetchUsersData();
-                    }} 
-                    className="bg-gray-900 text-white px-4 py-3 rounded-xl font-black text-xs uppercase tracking-widest active:scale-95 flex items-center gap-2 shadow-sm whitespace-nowrap">
-                    <Plus size={16} /> New Order
-                  </button>
+                  
+                  {/* 🌟 NAYA: Toggle aur Add order button container */}
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => setShowSellerOrders(!showSellerOrders)} className={`p-3 rounded-xl border flex items-center justify-center transition-all shadow-sm ${showSellerOrders ? 'bg-purple-100 border-purple-200 text-purple-700' : 'bg-white border-gray-200 text-gray-500'}`}>
+                        {showSellerOrders ? <ToggleRight size={18} className="text-purple-600"/> : <ToggleLeft size={18} />}
+                    </button>
+                    <button 
+                      onClick={() => { 
+                        setDraftUser(null); setDraftItems([]); setCreateOrderStep('select_user'); setIsCreateOrderOpen(true); 
+                        if (usersList.length === 0) fetchUsersData();
+                      }} 
+                      className="bg-gray-900 text-white px-4 py-3 rounded-xl font-black text-xs uppercase tracking-widest active:scale-95 flex items-center gap-2 shadow-sm whitespace-nowrap">
+                      <Plus size={16} /> Order
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -848,16 +921,6 @@ export default function SellerDashboard() {
         {/* ── 🌟 VIEW 5: ORDER DETAIL PAGE ── */}
         {view === 'order_detail' && selectedOrder && (
           <div className="animate-in slide-in-from-right duration-300 flex flex-col min-h-full bg-[#F8F9FA] pb-24">
-            
-            <style dangerouslySetInnerHTML={{__html: `
-              @media print {
-                @page { size: A4 portrait; margin: 15mm; }
-                body, html { background-color: white !important; width: 100% !important; margin: 0 !important; padding: 0 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-                .print-hidden, header, nav { display: none !important; }
-                main { overflow: visible !important; height: auto !important; padding: 0 !important; width: 100% !important; max-width: 100% !important; }
-                .shadow-sm, .shadow-2xl { box-shadow: none !important; border: none !important; }
-              }
-            `}} />
 
             {/* Print Header UI (Visible ONLY when printing) */}
             <div className="hidden print:block bg-white text-black w-full" style={{ fontFamily: "sans-serif" }}>
@@ -969,6 +1032,13 @@ export default function SellerDashboard() {
                   <a href={`tel:+91${selectedOrder.phone}`} className="flex-1 flex justify-center items-center gap-1.5 text-[11px] font-bold text-blue-700 bg-blue-100 px-3 py-2 rounded-lg"><Phone size={14}/> Call</a>
                   <a href={getWhatsAppLink(`91${selectedOrder.phone}`)} target="_blank" rel="noreferrer" className="flex-1 flex justify-center items-center gap-1.5 text-[11px] font-bold text-green-700 bg-green-100 px-3 py-2 rounded-lg"><MessageCircle size={14}/> WhatsApp</a>
                 </div>
+                
+                {/* 🌟 FIX: TRACKING URL WAPAS AA GAYA */}
+                <div className="mt-3 pt-3 border-t border-gray-200">
+                  <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1 block">Tracking Link</label>
+                  <input type="text" className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm font-medium outline-none focus:border-blue-500" placeholder="Paste tracking link here..." value={trackingUrl} onChange={(e) => setTrackingUrl(e.target.value)} />
+                </div>
+                
               </div>
             </div>
 
@@ -1007,7 +1077,10 @@ export default function SellerDashboard() {
                   return Object.entries(groupedItems).map(([pId, group]: any) => (
                     <div key={pId} className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
                       <div className="p-3 bg-gray-50 border-b border-gray-200 flex gap-3 items-center">
-                        <div className="w-12 h-12 bg-white rounded-lg border border-gray-200 p-0.5 shrink-0" onClick={() => setZoomOverlay({images: [group.img], currentIndex: 0})}><img src={group.img} className="w-full h-full object-cover rounded-md" alt="" /></div>
+                        {/* 🌟 FIX: Optimized Next Image */}
+                        <div className="relative w-12 h-12 bg-white rounded-lg border border-gray-200 p-0.5 shrink-0 overflow-hidden" onClick={() => setZoomOverlay({images: [group.img], currentIndex: 0})}>
+                          {group.img && <Image src={group.img} alt="" fill sizes="48px" className="object-cover rounded-md p-0.5" />}
+                        </div>
                         <h4 className="font-bold text-sm text-gray-900 truncate flex-1">{group.name}</h4>
                        {group.unsavedItems?.length > 0 && (
                            <button onClick={() => {
@@ -1104,6 +1177,79 @@ export default function SellerDashboard() {
             </div>
           </div>
         )}
+        {/* 🌟 NAYA: CREATE USER BOTTOM SHEET */}
+      {isCreateUserOpen && (
+        <div className="fixed inset-0 z-[7000] flex justify-end flex-col print-hidden">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsCreateUserOpen(false)}></div>
+          <div className="bg-white w-full max-w-md mx-auto rounded-t-[2rem] relative z-10 animate-in slide-in-from-bottom-full duration-300 shadow-2xl flex flex-col">
+            
+            <div className="p-4 border-b border-gray-100 flex justify-between items-center">
+              <h3 className="font-black text-gray-900 uppercase tracking-widest text-sm flex items-center gap-2"><UserPlus size={18} className="text-blue-600"/> Add New Customer</h3>
+              <button onClick={() => setIsCreateUserOpen(false)} className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-gray-500 hover:bg-gray-200"><X size={16}/></button>
+            </div>
+            
+            <div className="p-5 space-y-4">
+              <div><input type="text" placeholder="Full Name" className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm font-semibold focus:border-blue-500 outline-none" value={newUserForm.name} onChange={e => setNewUserForm({...newUserForm, name: e.target.value})} /></div>
+              
+              <div className="grid grid-cols-2 gap-4">
+                 <div>
+                   <input type="tel" placeholder="Mobile Number" maxLength={10} 
+                     className={`w-full bg-gray-50 border ${phoneError ? 'border-red-500 text-red-600' : 'border-gray-200 focus:border-blue-500'} rounded-xl px-4 py-3 text-sm font-black outline-none`} 
+                     value={newUserForm.phone} 
+                     onChange={async (e) => {
+                       const val = e.target.value.replace(/\D/g, '');
+                       setNewUserForm({...newUserForm, phone: val});
+                       setPhoneError(''); // Type karte waqt error hatao
+                       
+                       // 🌟 NAYA: Jaise hi 10 digit poore honge, DB mein instantly check karega (Optimized Egress k sath)
+                       if (val.length === 10) {
+                          const { data } = await supabase.from('users').select('id').eq('phone', val).maybeSingle();
+                          if (data) setPhoneError('Number Already Exists!');
+                       }
+                     }} 
+                   />
+                   {/* Error message UI */}
+                   {phoneError && <p className="text-[9px] font-black text-red-600 mt-1 ml-1">{phoneError}</p>}
+                 </div>
+                 <div><input type="text" placeholder="Set Password" className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm font-black text-red-600 focus:border-red-500 outline-none" value={newUserForm.password} onChange={e => setNewUserForm({...newUserForm, password: e.target.value})} /></div>
+              </div>
+
+              <div><textarea placeholder="Complete Address (Shop, Street)" className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm font-semibold focus:border-blue-500 outline-none h-20" value={newUserForm.address} onChange={e => setNewUserForm({...newUserForm, address: e.target.value})} /></div>
+              
+              <div className="grid grid-cols-2 gap-4">
+                <div><input type="number" placeholder="Pincode" className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm font-black focus:border-blue-500 outline-none" value={newUserForm.pincode} 
+                    onChange={async (e) => {
+                      const val = e.target.value;
+                      setNewUserForm(prev => ({...prev, pincode: val}));
+                      if(val.length === 6) {
+                        try {
+                          const res = await fetch(`https://api.postalpincode.in/pincode/${val}`);
+                          const data = await res.json();
+                          if(data && data[0].Status === 'Success') {
+                            const postOffice = data[0].PostOffice[0];
+                            setNewUserForm(prev => ({...prev, city: postOffice.District || postOffice.Block, state: postOffice.State}));
+                            showToast("City Auto-filled! 📍");
+                          }
+                        } catch(err) { }
+                      }
+                    }} 
+                  />
+                </div>
+                <div><input type="text" placeholder="City" className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm font-semibold outline-none" value={newUserForm.city} onChange={e => setNewUserForm({...newUserForm, city: e.target.value})} /></div>
+              </div>
+
+              <button 
+                // 🌟 FIX: Agar phone error hai toh button disable ho jayega
+                onClick={handleCreateUser} disabled={isCreatingUser || phoneError !== ''}
+                className={`w-full mt-2 py-4 rounded-xl font-black uppercase tracking-widest text-xs shadow-md flex justify-center items-center gap-2 transition-all ${phoneError ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-gray-900 text-white active:scale-95'}`}
+              >
+                {isCreatingUser ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+                {isCreatingUser ? 'Creating...' : 'Create Customer'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       </main>
 
       {isCartSheetOpen && viewingUserCart && (() => {
@@ -1184,8 +1330,9 @@ export default function SellerDashboard() {
                     {groupedCart.map((group, idx) => (
                       <div key={idx} className="bg-white p-3.5 shadow-sm rounded-2xl border border-gray-100">
                         <div className="flex gap-4">
-                           <div className="w-20 h-24 bg-gray-50 shrink-0 rounded-xl overflow-hidden border">
-                             <img src={group.displayImg} className="w-full h-full object-cover" alt="" />
+                           {/* 🌟 FIX: Optimized Next Image */}
+                           <div className="relative w-20 h-24 bg-gray-50 shrink-0 rounded-xl overflow-hidden border">
+                             {group.displayImg && <Image src={group.displayImg} alt="" fill sizes="80px" className="object-cover" />}
                            </div>
                            <div className="flex-1 flex flex-col">
                               <h4 className="font-bold text-gray-900 text-[14px] truncate">{group.name}</h4>
@@ -1215,11 +1362,12 @@ export default function SellerDashboard() {
       })()}
 
       {isCreateOrderOpen && (
-        <div className="fixed inset-0 z-[6000] flex justify-end flex-col print-hidden">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => { setIsCreateOrderOpen(false); setSelectedProductForAdd(null); }}></div>
-          <div className="bg-[#F8F9FA] w-full max-w-md mx-auto rounded-t-[2rem] relative z-10 animate-in slide-in-from-bottom-full duration-300 shadow-2xl flex flex-col h-[90vh]">
+        // 🌟 FIX: Print classes update ki taaki ye hide na ho
+        <div className="fixed inset-0 z-[6000] flex justify-end flex-col print:relative print:z-auto print:block">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm print:hidden" onClick={() => { setIsCreateOrderOpen(false); setSelectedProductForAdd(null); }}></div>
+          <div className="bg-[#F8F9FA] w-full max-w-md mx-auto rounded-t-[2rem] relative z-10 animate-in slide-in-from-bottom-full duration-300 shadow-2xl flex flex-col h-[90vh] print:h-auto print:shadow-none print:bg-white print:w-full print:max-w-full">
             
-            <div className="p-4 border-b border-gray-200 bg-white rounded-t-[2rem] shrink-0 flex justify-between items-center">
+            <div className="p-4 border-b border-gray-200 bg-white rounded-t-[2rem] shrink-0 flex justify-between items-center print:hidden">
               <h3 className="font-black text-gray-900 uppercase tracking-widest text-sm flex items-center gap-2">
                 {createOrderStep === 'select_user' ? <Users size={18}/> : createOrderStep === 'cart' ? <ShoppingCart size={18}/> : <Package size={18}/>}
                 {createOrderStep === 'select_user' ? 'Select Customer' : createOrderStep === 'cart' ? 'Draft Order' : 'Add Product'}
@@ -1227,7 +1375,8 @@ export default function SellerDashboard() {
               <button onClick={() => { setIsCreateOrderOpen(false); setSelectedProductForAdd(null); }} className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-gray-500 hover:bg-gray-200"><X size={16}/></button>
             </div>
             
-            <div className="flex-1 overflow-y-auto p-4 space-y-4" onScroll={handleGlobalScroll}>
+            {/* 🌟 FIX: print:overflow-visible, print:p-0 aur print:space-y-0 lagaya taaki bilkul top se shuru ho */}
+            <div className="flex-1 overflow-y-auto print:overflow-visible p-4 print:p-0 space-y-4 print:space-y-0" onScroll={handleGlobalScroll}>
               
               {createOrderStep === 'select_user' && (
                 <>
@@ -1265,96 +1414,169 @@ export default function SellerDashboard() {
 
                 return (
                 <>
-                  {(!draftUser.address || !draftUser.city || !draftUser.pincode) ? (
-                     <div className="bg-red-50 p-3 rounded-xl border border-red-100 flex justify-between items-center mb-4 shadow-sm">
-                        <div>
-                           <p className="text-[10px] font-bold text-red-600 uppercase">Action Required</p>
-                           <h4 className="font-black text-red-900 text-xs mt-0.5">Delivery Address Missing</h4>
-                        </div>
-                        <button onClick={() => { setAddressForm({address: draftUser.address||'', city: draftUser.city||'', state: draftUser.state||'', pincode: draftUser.pincode||''}); setIsAddressSheetOpen(true); }} className="text-[10px] font-black text-white bg-red-600 px-3 py-1.5 rounded-lg active:scale-95 shadow-sm">Add Now</button>
-                     </div>
-                  ) : (
-                     <div className="bg-gray-50 p-3 rounded-xl border border-gray-200 flex justify-between items-start mb-4 shadow-sm">
-                        <div>
-                           <p className="text-[10px] font-bold text-gray-500 uppercase">Delivery Address</p>
-                           <p className="font-bold text-gray-800 text-xs mt-0.5 leading-tight">{draftUser.address}, {draftUser.city}, {draftUser.state} - {draftUser.pincode}</p>
-                        </div>
-                        <button onClick={() => { setAddressForm({address: draftUser.address||'', city: draftUser.city||'', state: draftUser.state||'', pincode: draftUser.pincode||''}); setIsAddressSheetOpen(true); }} className="text-[10px] font-bold text-blue-600 underline shrink-0 ml-2">Edit</button>
-                     </div>
-                  )}
+                  <div className="print:hidden space-y-4">
+                    {(!draftUser.address || !draftUser.city || !draftUser.pincode) ? (
+                       <div className="bg-red-50 p-3 rounded-xl border border-red-100 flex justify-between items-center shadow-sm">
+                          <div>
+                             <p className="text-[10px] font-bold text-red-600 uppercase">Action Required</p>
+                             <h4 className="font-black text-red-900 text-xs mt-0.5">Delivery Address Missing</h4>
+                          </div>
+                          <button onClick={() => { setAddressForm({address: draftUser.address||'', city: draftUser.city||'', state: draftUser.state||'', pincode: draftUser.pincode||''}); setIsAddressSheetOpen(true); }} className="text-[10px] font-black text-white bg-red-600 px-3 py-1.5 rounded-lg active:scale-95 shadow-sm">Add Now</button>
+                       </div>
+                    ) : (
+                       <div className="bg-gray-50 p-3 rounded-xl border border-gray-200 flex justify-between items-start shadow-sm">
+                          <div>
+                             <p className="text-[10px] font-bold text-gray-500 uppercase">Delivery Address</p>
+                             <p className="font-bold text-gray-800 text-xs mt-0.5 leading-tight">{draftUser.address}, {draftUser.city}, {draftUser.state} - {draftUser.pincode}</p>
+                          </div>
+                          <button onClick={() => { setAddressForm({address: draftUser.address||'', city: draftUser.city||'', state: draftUser.state||'', pincode: draftUser.pincode||''}); setIsAddressSheetOpen(true); }} className="text-[10px] font-bold text-blue-600 underline shrink-0 ml-2">Edit</button>
+                       </div>
+                    )}
 
-                  <div className="bg-blue-50 p-3 rounded-xl border border-blue-100 flex justify-between items-center mb-4 shrink-0">
-                    <div><p className="text-[10px] font-bold text-blue-600 uppercase">Customer Selected</p><h4 className="font-black text-blue-900">{draftUser.name} <span className="text-[10px] text-blue-700">(-{draftUser.discount_percent || safeParseJSON(draftUser.meta, {})?.discount_percent || 0}%)</span></h4></div>
-                    <button onClick={() => setCreateOrderStep('select_user')} className="text-[10px] font-bold text-blue-600 underline">Change</button>
-                  </div>
-                  
-                  <div className="flex justify-between items-center mb-3">
-                    <h3 className="font-black text-gray-800 text-xs uppercase tracking-widest">Draft Items</h3>
-                    <button onClick={() => setCreateOrderStep('add_item')} className="text-[10px] font-bold text-blue-600 bg-blue-50 px-3 py-1.5 rounded-lg active:scale-95 border border-blue-100 flex items-center gap-1">
-                      <Plus size={14} /> Add Item
-                    </button>
-                  </div>
+                    <div className="bg-blue-50 p-3 rounded-xl border border-blue-100 flex justify-between items-center shrink-0">
+                      <div><p className="text-[10px] font-bold text-blue-600 uppercase">Customer Selected</p><h4 className="font-black text-blue-900">{draftUser.name} <span className="text-[10px] text-blue-700">(-{draftUser.discount_percent || safeParseJSON(draftUser.meta, {})?.discount_percent || 0}%)</span></h4></div>
+                      <button onClick={() => setCreateOrderStep('select_user')} className="text-[10px] font-bold text-blue-600 underline">Change</button>
+                    </div>
+                    
+                    <div className="flex justify-between items-center">
+                      <h3 className="font-black text-gray-800 text-xs uppercase tracking-widest">Draft Items</h3>
+                      <button onClick={() => setCreateOrderStep('add_item')} className="text-[10px] font-bold text-blue-600 bg-blue-50 px-3 py-1.5 rounded-lg active:scale-95 border border-blue-100 flex items-center gap-1">
+                        <Plus size={14} /> Add Item
+                      </button>
+                    </div>
 
-                  <div className="space-y-3">
-                    {Object.entries(groupedDrafts).map(([pId, group]: any) => (
-                      <div key={pId} className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-                        <div className="p-3 bg-gray-50 border-b border-gray-200 flex gap-3 items-center">
-                          <div className="w-12 h-12 bg-white rounded-lg border border-gray-200 p-0.5 shrink-0"><img src={group.img} className="w-full h-full object-cover rounded-md" alt="" /></div>
-                          <h4 className="font-bold text-sm text-gray-900 truncate flex-1">{group.name}</h4>
-                          <button onClick={() => {
-                              setSelectedProductForAdd(group.product);
-                              const sizes = safeParseJSON(group.product.meta, {})?.attributes?.available_sizes || {};
-                              const initialConfig: any = {};
-                              Object.keys(sizes).forEach(sz => { initialConfig[sz] = 0; });
-                              group.items.forEach((ui:any) => { initialConfig[ui.size] = ui.qty; });
-                              setAddSizeConfig(initialConfig);
-                              setCreateOrderStep('add_item');
-                          }} className="text-blue-600 bg-blue-50 p-1.5 rounded-md hover:bg-blue-100 active:scale-95"><Edit2 size={14}/></button>
-                        </div>
-                        
-                        <div className="p-3 space-y-2">
-                          {group.items.map((item: any) => {
-                            const lineTotal = Number((item.rate * item.qty).toFixed(2));
-                            return (
-                            <div key={`draft-${item._originalIndex}`} className="flex justify-between items-center text-sm font-bold bg-[#F0FDF4] border border-[#BBF7D0] p-2 rounded-lg relative transition-all">
-                              <span className="w-10 text-green-900">{item.size}</span>
-                              <span className="w-12 text-center text-green-300">-</span>
-                              <div className="w-20 flex justify-center">
-                                 <input type="number" className="w-14 text-center bg-white border border-green-300 text-green-800 rounded-md py-1 outline-none font-black shadow-sm" 
-                                    value={item.qty} 
-                                    onChange={(e) => {
-                                        const val = parseInt(e.target.value) || 0;
-                                        const updated = [...draftItems];
-                                        updated[item._originalIndex].qty = val;
-                                        setDraftItems(updated);
-                                    }} 
-                                 />
+                    <div className="space-y-3">
+                      {Object.entries(groupedDrafts).map(([pId, group]: any) => (
+                        <div key={pId} className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+                          <div className="p-3 bg-gray-50 border-b border-gray-200 flex gap-3 items-center">
+                            <div className="relative w-12 h-12 bg-white rounded-lg border border-gray-200 p-0.5 shrink-0 overflow-hidden"><Image src={group.img} alt="" fill sizes="48px" className="object-cover rounded-md p-0.5" /></div>
+                            <h4 className="font-bold text-sm text-gray-900 truncate flex-1">{group.name}</h4>
+                            <button onClick={() => {
+                                setSelectedProductForAdd(group.product);
+                                const sizes = safeParseJSON(group.product.meta, {})?.attributes?.available_sizes || {};
+                                const initialConfig: any = {};
+                                Object.keys(sizes).forEach(sz => { initialConfig[sz] = 0; });
+                                group.items.forEach((ui:any) => { initialConfig[ui.size] = ui.qty; });
+                                setAddSizeConfig(initialConfig);
+                                setCreateOrderStep('add_item');
+                            }} className="text-blue-600 bg-blue-50 p-1.5 rounded-md hover:bg-blue-100 active:scale-95"><Edit2 size={14}/></button>
+                          </div>
+                          
+                          <div className="p-3 space-y-2">
+                            {group.items.map((item: any) => {
+                              const lineTotal = Number((item.rate * item.qty).toFixed(2));
+                              return (
+                              <div key={`draft-${item._originalIndex}`} className="flex justify-between items-center text-sm font-bold bg-[#F0FDF4] border border-[#BBF7D0] p-2 rounded-lg relative transition-all">
+                                <span className="w-10 text-green-900">{item.size}</span>
+                                <span className="w-12 text-center text-green-300">-</span>
+                                <div className="w-20 flex justify-center">
+                                   <input type="number" className="w-14 text-center bg-white border border-green-300 text-green-800 rounded-md py-1 outline-none font-black shadow-sm" 
+                                      value={item.qty} 
+                                      onChange={(e) => {
+                                          const val = parseInt(e.target.value) || 0;
+                                          const updated = [...draftItems];
+                                          updated[item._originalIndex].qty = val;
+                                          setDraftItems(updated);
+                                      }} 
+                                   />
+                                </div>
+
+                                <div className="flex items-center justify-end w-20 gap-1">
+                                 <div className="flex flex-col items-end">
+                                   <span className="text-right text-green-800 shrink-0 leading-tight">₹{lineTotal}</span>
+                                   <span className="text-[8px] text-gray-400 line-through">₹{item.product.mrp * item.qty}</span>
+                                 </div>
+                                 <button onClick={() => {
+                                     const updated = draftItems.filter((_, idx) => idx !== item._originalIndex);
+                                     setDraftItems(updated);
+                                 }} className="text-red-500 hover:bg-red-100 p-1.5 rounded-md ml-1 active:scale-95 transition-transform"><Trash2 size={14}/></button>
                               </div>
 
-                              <div className="flex items-center justify-end w-20 gap-1">
-                               <div className="flex flex-col items-end">
-                                 <span className="text-right text-green-800 shrink-0 leading-tight">₹{lineTotal}</span>
-                                 <span className="text-[8px] text-gray-400 line-through">₹{item.product.mrp * item.qty}</span>
-                               </div>
-                               <button onClick={() => {
-                                   const updated = draftItems.filter((_, idx) => idx !== item._originalIndex);
-                                   setDraftItems(updated);
-                               }} className="text-red-500 hover:bg-red-100 p-1.5 rounded-md ml-1 active:scale-95 transition-transform"><Trash2 size={14}/></button>
-                            </div>
+                              </div>
+                            )})}
+                          </div>
+                        </div>
+                      ))}
+                      
+                      {Object.keys(groupedDrafts).length === 0 && (
+                         <button onClick={() => setCreateOrderStep('add_item')} className="w-full bg-white border-2 border-dashed border-gray-300 text-gray-600 py-4 rounded-2xl font-black text-xs uppercase tracking-widest active:scale-95 flex items-center justify-center gap-2 hover:bg-gray-50"><Plus size={16} /> Browse & Add Item</button>
+                      )}
+                    </div>
+                  </div>
 
-                            </div>
-                          )})}
+                  {/* 🌟 NAYA: DRAFT INVOICE PRINT LAYOUT */}
+                  <div className="hidden print:block bg-white text-black w-full" style={{ fontFamily: "sans-serif" }}>
+                    <div className="flex justify-between items-start mb-6">
+                      <div>
+                        <h1 className="text-2xl font-black tracking-widest text-blue-800 uppercase mb-2">QUOTATION (DRAFT)</h1>
+                        <h2 className="text-xl font-bold">{currentUser?.name || 'Seller Fashion'}</h2>
+                        <p className="text-xs text-gray-600 mt-1">Mobile: {currentUser?.phone || '+91 -'}</p>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4 border-y border-black py-3 mb-6 text-sm">
+                      <div>
+                        <p><span className="font-bold">Customer Details:</span></p>
+                        <p className="font-bold uppercase">{draftUser.name}</p>
+                        <p>Ph: {draftUser.phone}</p>
+                      </div>
+                      <div className="text-right">
+                        <p><span className="font-bold">Date:</span> {new Date().toLocaleDateString('en-IN', {day: 'numeric', month: 'short', year: 'numeric'})}</p>
+                        <p className="mt-1"><span className="font-bold">Dispatch To:</span></p>
+                        <p>{draftUser.address}</p>
+                        <p>{draftUser.city}, {draftUser.state} - {draftUser.pincode}</p>
+                      </div>
+                    </div>
+
+                    <table className="w-full text-left text-sm mb-6 border-collapse">
+                      <thead>
+                        <tr className="border-y-2 border-black bg-gray-50/50">
+                          <th className="py-2 px-1 font-bold">#</th>
+                          <th className="py-2 px-1 font-bold">Item</th>
+                          <th className="py-2 px-1 font-bold text-center">Size</th>
+                          <th className="py-2 px-1 font-bold text-right">MRP</th>
+                          <th className="py-2 px-1 font-bold text-right">Rate</th>
+                          <th className="py-2 px-1 font-bold text-center">Qty</th>
+                          <th className="py-2 px-1 font-bold text-right">Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody className="border-b-2 border-black">
+                        {draftItems.map((item, idx) => {
+                          const amount = item.qty * item.rate;
+                          if (item.qty <= 0) return null; 
+
+                          return (
+                            <tr key={idx} className="border-b border-gray-200 last:border-0">
+                              <td className="py-3 px-1">{idx + 1}</td>
+                              <td className="py-3 px-1 uppercase font-semibold">{item.product.name}</td>
+                              <td className="py-3 px-1 font-bold text-center">{item.size}</td>
+                              <td className="py-3 px-1 text-right text-gray-500">{item.product.mrp ? `₹${Number(item.product.mrp).toFixed(2)}` : '-'}</td>
+                              <td className="py-3 px-1 text-right font-medium">₹{Number(item.rate).toFixed(2)}</td>
+                              <td className="py-3 px-1 text-center font-black text-gray-800">{item.qty}</td>
+                              <td className="py-3 px-1 text-right font-black text-gray-900">₹{amount.toFixed(2)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+
+                    <div className="flex justify-between items-end pt-2">
+                      <div className="text-xs text-gray-500 font-bold">
+                          Total Items / Qty: {draftItems.length} / {draftItems.reduce((acc, item) => acc + item.qty, 0)}
+                      </div>
+                      <div className="text-right w-1/3">
+                        <div className="flex justify-between font-bold text-sm border-b border-gray-200 pb-1 mb-1">
+                          <span>Estimated Total</span>
+                          <span>₹{Math.round(draftItems.reduce((acc, item) => acc + (item.qty * item.rate), 0)).toLocaleString('en-IN')}.00</span>
                         </div>
                       </div>
-                    ))}
-                    
-                    {Object.keys(groupedDrafts).length === 0 && (
-                       <button onClick={() => setCreateOrderStep('add_item')} className="w-full bg-white border-2 border-dashed border-gray-300 text-gray-600 py-4 rounded-2xl font-black text-xs uppercase tracking-widest active:scale-95 flex items-center justify-center gap-2 hover:bg-gray-50"><Plus size={16} /> Browse & Add Item</button>
-                    )}
+                    </div>
                   </div>
                 </>
                 );
               })()}
+
+              {/* ... "createOrderStep === 'add_item' UI yahan hota hai" ... */}
 
               {createOrderStep === 'add_item' && !selectedProductForAdd && (
                 <>
@@ -1371,7 +1593,9 @@ export default function SellerDashboard() {
                           Object.keys(sizes).forEach(sz => { initialConfig[sz] = 0; });
                           setAddSizeConfig(initialConfig);
                         }} className="bg-white p-2 rounded-xl border border-gray-200 shadow-sm cursor-pointer active:scale-95">
-                          <img src={imgData.images[0] || ''} className="w-full h-24 object-cover rounded-lg mb-2 mix-blend-multiply" alt=""/>
+                          <div className="relative w-full h-24 mb-2 overflow-hidden rounded-lg">
+                            {imgData.images[0] && <Image src={imgData.images[0]} alt="" fill sizes="(max-width: 768px) 50vw, 33vw" className="object-cover mix-blend-multiply" />}
+                          </div>
                           <h4 className="font-bold text-xs text-gray-900 truncate">{p.name}</h4>
                           <div className="flex items-center gap-1 mt-1">
                             <p className="font-black text-blue-600 text-[11px]">₹{p.cost}</p>
@@ -1388,56 +1612,91 @@ export default function SellerDashboard() {
                 const targetUser = draftUser || selectedOrder || {};
                 const productBoxSize = safeParseJSON(selectedProductForAdd?.meta, {})?.attributes?.box_size?.[0] || 6;
 
+                // 🌟 FIX: Pehle se added sizes ko dhundo (Lock karne ke liye)
+                const existingSizes = new Set();
+                if (draftUser) {
+                    draftItems.forEach((item: any) => { if (item.product.id === selectedProductForAdd.id) existingSizes.add(item.size); });
+                } else {
+                    orderItems.forEach((item: any) => { if (item.productid === selectedProductForAdd.id) existingSizes.add(item.size); });
+                    newOrderItems.forEach((item: any) => { if (item.product.id === selectedProductForAdd.id) existingSizes.add(item.size); });
+                }
+
                 return (
-                  <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-sm space-y-4">
+                  <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-sm flex flex-col relative h-full">
                     <button onClick={() => setSelectedProductForAdd(null)} className="text-[10px] font-bold text-gray-500 flex items-center gap-1 mb-2"><ChevronLeft size={14}/> Back to Products</button>
-                    <h4 className="font-black text-lg text-gray-900 leading-tight">{selectedProductForAdd.name}</h4>
+                    <h4 className="font-black text-lg text-gray-900 leading-tight mb-4">{selectedProductForAdd.name}</h4>
                     
-                    {Object.keys(addSizeConfig).map(size => {
-                      const finalRate = calculateFinalRate(selectedProductForAdd, size, targetUser);
+                    <div className="flex-1 space-y-1 mb-4">
+                        {Object.keys(addSizeConfig).map(size => {
+                          const finalRate = calculateFinalRate(selectedProductForAdd, size, targetUser);
+                          const isAlreadyAdded = existingSizes.has(size);
 
-                      return (
-                        <div key={size} className="flex justify-between items-center py-3 border-b border-gray-100 last:border-0">
-                          <div>
-                             <p className="font-black text-gray-900 text-base">{size}</p>
-                             <p className="text-[10px] text-green-600 font-bold flex items-center gap-1">
-                                Final Rate: ₹{finalRate.toFixed(2)} 
-                                <span className="text-[9px] text-gray-400 line-through">₹{selectedProductForAdd.mrp}</span>
-                             </p>
-                          </div>
-                          <div className="flex items-center gap-3">
-                            <button onClick={() => setAddSizeConfig((prev:any) => ({...prev, [size]: Math.max(0, prev[size] - productBoxSize)}))} className="w-8 h-8 rounded-full bg-gray-100 font-bold active:scale-95 hover:bg-gray-200">-</button>
-                            <span className="font-black text-lg w-4 text-center">{addSizeConfig[size]}</span>
-                            <button onClick={() => setAddSizeConfig((prev:any) => ({...prev, [size]: prev[size] + productBoxSize}))} className="w-8 h-8 rounded-full bg-blue-50 text-blue-600 font-bold active:scale-95 hover:bg-blue-100">+</button>
-                          </div>
-                        </div>
-                      )
-                    })}
+                          return (
+                            <div key={size} className={`flex justify-between items-center py-3 border-b border-gray-100 last:border-0 ${isAlreadyAdded ? 'opacity-60 bg-gray-50 px-2 rounded-lg' : ''}`}>
+                              <div>
+                                 <p className="font-black text-gray-900 text-base">{size}</p>
+                                 <p className="text-[10px] text-green-600 font-bold flex items-center gap-1">
+                                    Final Rate: ₹{finalRate.toFixed(2)} 
+                                    <span className="text-[9px] text-gray-400 line-through">₹{selectedProductForAdd.mrp}</span>
+                                 </p>
+                              </div>
+                              <div className="flex items-center gap-3">
+                                {/* 🌟 FIX: Agar pehle se added hai toh '+' '-' button gayab karke badge dikhao */}
+                                {isAlreadyAdded ? (
+                                    <span className="text-[9px] font-black text-blue-600 bg-blue-50 px-2 py-1 rounded border border-blue-100 uppercase tracking-widest">Already Added</span>
+                                ) : (
+                                    <>
+                                      <button onClick={() => setAddSizeConfig((prev:any) => ({...prev, [size]: Math.max(0, prev[size] - productBoxSize)}))} className="w-8 h-8 rounded-full bg-gray-100 font-bold active:scale-95 hover:bg-gray-200">-</button>
+                                      <span className="font-black text-lg w-4 text-center">{addSizeConfig[size]}</span>
+                                      <button onClick={() => setAddSizeConfig((prev:any) => ({...prev, [size]: prev[size] + productBoxSize}))} className="w-8 h-8 rounded-full bg-blue-50 text-blue-600 font-bold active:scale-95 hover:bg-blue-100">+</button>
+                                    </>
+                                )}
+                              </div>
+                            </div>
+                          )
+                        })}
+                    </div>
 
-                    <button onClick={() => {
-                      let updatedList = draftUser ? [...draftItems] : [...newOrderItems];
-                      updatedList = updatedList.filter(item => item.product.id !== selectedProductForAdd.id);
-                      
-                      Object.keys(addSizeConfig).forEach(size => {
-                        if (addSizeConfig[size] > 0) {
-                          updatedList.push({ product: selectedProductForAdd, size: size, qty: addSizeConfig[size], rate: calculateFinalRate(selectedProductForAdd, size, targetUser) });
-                        }
-                      });
+                    {/* 🌟 FIX: Sticky Bottom Button (Neeche chipka rahega) */}
+                    {/* 🌟 FIX: Sticky Bottom Button (Neeche chipka rahega) */}
+                    <div className="sticky bottom-[-16px] -mx-4 -mb-4 p-4 bg-white border-t border-gray-100 z-10 rounded-b-2xl shadow-[0_-4px_10px_rgba(0,0,0,0.02)]">
+                        <button onClick={() => {
+                          let updatedList = draftUser ? [...draftItems] : [...newOrderItems];
+                          updatedList = updatedList.filter(item => item.product.id !== selectedProductForAdd.id);
+                          
+                          let hasAddedAny = false;
+                          Object.keys(addSizeConfig).forEach(size => {
+                            if (addSizeConfig[size] > 0 && !existingSizes.has(size)) {
+                              updatedList.push({ product: selectedProductForAdd, size: size, qty: addSizeConfig[size], rate: calculateFinalRate(selectedProductForAdd, size, targetUser) });
+                              hasAddedAny = true;
+                            }
+                          });
 
-                      if (Object.keys(addSizeConfig).every(sz => addSizeConfig[sz]===0)) return showToast("Select at least 1 quantity!");
+                          if (!hasAddedAny && Object.keys(addSizeConfig).every(sz => addSizeConfig[sz]===0)) return showToast("Select at least 1 quantity!");
 
-                      if (draftUser) { setDraftItems(updatedList); setCreateOrderStep('cart'); } 
-                      else { setNewOrderItems(updatedList); setIsCreateOrderOpen(false); showToast("Items added! Tap 'Save Updates' below."); }
-                      setSelectedProductForAdd(null);
-                    }} className="w-full bg-gray-900 text-white py-4 rounded-xl font-black uppercase tracking-widest text-xs mt-4 active:scale-95 shadow-md">Confirm & Add</button>
+                          if (draftUser) { setDraftItems(updatedList); } 
+                          else { setNewOrderItems(updatedList); }
+                          
+                          // 🌟 FIX: Search Bar ko clear karo aur wapas list par bhejo
+                          setProductSearchQuery(''); // <-- Ye line purani search hata degi
+                          setSelectedProductForAdd(null);
+                          showToast("Added! Browse more products.");
+                        }} className="w-full bg-gray-900 text-white py-4 rounded-xl font-black uppercase tracking-widest text-xs active:scale-95 shadow-md">Confirm & Add</button>
+                    </div>
                   </div>
                 );
               })()}
             </div>
 
             {createOrderStep === 'cart' && draftItems.length > 0 && (
-              <div className="p-4 bg-white border-t border-gray-200 shrink-0">
-               <button onClick={async () => {
+              // 🌟 NAYA: Place Order ke bagal mein Bill button lagaya and hide in print mode
+              <div className="p-4 bg-white border-t border-gray-200 shrink-0 flex items-center gap-3 print:hidden">
+                 <button onClick={() => window.print()} className="w-[60px] h-[52px] rounded-xl border border-gray-200 bg-gray-50 flex flex-col items-center justify-center text-gray-700 shrink-0 hover:bg-gray-100 active:scale-95 shadow-sm">
+                   <FileText size={18}/>
+                   <span className="text-[9px] font-black uppercase mt-1">Bill</span>
+                 </button>
+
+                 <button onClick={async () => {
                     if(!draftUser.address || !draftUser.city || !draftUser.pincode) {
                         return showToast("Please add delivery address first! 📍");
                     }
