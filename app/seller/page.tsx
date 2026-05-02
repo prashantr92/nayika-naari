@@ -25,22 +25,21 @@ const getLocalTimestamp = () => new Date().toISOString();
 const safeFormatDate = (d: string | null) => {
   if (!d) return "N/A";
   let dateString = d;
+  
+  // 🌟 FIX: 'Z' ki jagah '+05:30' laga diya taaki code isko natively Indian Time maane
+  // aur dobara 5:30 ghante plus na kare.
   if (!dateString.includes('Z') && !dateString.includes('+')) {
-    dateString += 'Z';
+    dateString += '+05:30';
   }
+  
   const dt = new Date(dateString);
   return isNaN(dt.getTime()) ? "N/A" : dt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true });
 };
 
 const getWhatsAppLink = (phone: string, text: string = '') => {
   const encodedText = encodeURIComponent(text);
-  let isAndroid = false;
-  if (typeof window !== 'undefined') { isAndroid = /Android/i.test(navigator.userAgent); }
-  if (isAndroid) {
-    const fallbackUrl = encodeURIComponent(`https://wa.me/${phone}?text=${encodedText}`);
-    return `intent://send?phone=${phone}&text=${encodedText}#Intent;scheme=whatsapp;package=com.whatsapp;S.browser_fallback_url=${fallbackUrl};end`;
-  }
-  return `https://wa.me/${phone}?text=${encodedText}`;
+  // 🌟 FIX: Direct App Deep Link - Ye beech wale confirmation page ko bypass karke seedha WhatsApp app kholega
+  return `whatsapp://send?phone=${phone}&text=${encodedText}`;
 };
 
 export default function SellerDashboard() {
@@ -71,7 +70,26 @@ export default function SellerDashboard() {
   const [isCreateUserOpen, setIsCreateUserOpen] = useState(false);
   const [isCreatingUser, setIsCreatingUser] = useState(false);
   const [newUserForm, setNewUserForm] = useState({ name: '', phone: '', password: '', pincode: '', city: '', state: '', address: '' });
-  const [phoneError, setPhoneError] = useState(''); // 🌟 NAYA: Phone number exist check karne ke liye
+  const [phoneError, setPhoneError] = useState('');
+
+  // 🌟 NAYA: CRM (Buyers/Leads) States
+  const [userTab, setUserTab] = useState<'app_users' | 'buyers'>('app_users');
+  const [buyersList, setBuyersList] = useState<any[]>([]);
+  const [buyerTagFilter, setBuyerTagFilter] = useState('All');
+  const [buyerSort, setBuyerSort] = useState('last_seen');
+  
+  const [isNoteSheetOpen, setIsNoteSheetOpen] = useState(false);
+  const [selectedBuyerForNote, setSelectedBuyerForNote] = useState<any>(null);
+  const [noteForm, setNoteForm] = useState({ text: '', nextDate: '' });
+  const [isSavingNote, setIsSavingNote] = useState(false);
+
+  const [isAddLeadOpen, setIsAddLeadOpen] = useState(false);
+  const [leadForm, setLeadForm] = useState({ name: '', phone: '', tag: 'Potential' });
+
+  // 🌟 NAYA: Sorting for App Users & View Notes Modal
+  const [appUserSort, setAppUserSort] = useState('last_seen');
+  const [isViewNotesOpen, setIsViewNotesOpen] = useState(false);
+  const [viewingNotesUser, setViewingNotesUser] = useState<any>(null);
 
   const handleCreateUser = async () => {
     // Check lagaya taaki error hone par button click na ho sake
@@ -291,8 +309,8 @@ export default function SellerDashboard() {
     }
 
     // 🌟 FIX: Select queries optimized
-    // 🌟 FIX: created_by DB se fetch kiya
-    const { data: ordersData } = await supabase.from('orders').select('id, userid, amount, finalAmount, status, box, pcs, city, tracking, createdAt, created_by').order('createdAt', { ascending: false });
+    // 🌟 FIX: Faltu columns hataye par address, phone wgera wapas add kiye taaki undefined na aaye
+    const { data: ordersData } = await supabase.from('orders').select('id, userid, amount, finalAmount, status, box, pcs, phone, address, city, state, pincode, tracking, meta, createdAt, created_by').order('createdAt', { ascending: false });
     let filteredOrders = ordersData || [];
     
     if (!isAdmin) {
@@ -323,11 +341,11 @@ export default function SellerDashboard() {
        orderIdsForSeller = new Set(od?.filter(d => sellerProductIds.has(d.productid)).map(d => d.orderid) || []);
     }
 
-    const [{ data: users }, { data: allOrders }, { data: cart }] = await Promise.all([
-      // 🌟 FIX: 'address' aur 'pincode' wapas add kar diye taaki bottom sheet mein auto-fill ho sake
+    const [{ data: users }, { data: allOrders }, { data: cart }, { data: userBase }] = await Promise.all([
       supabase.from('users').select('id, name, phone, city, state, address, pincode, password, discount_percent, meta, created_at').order('id', { ascending: false }),
       supabase.from('orders').select('id, userid, createdAt'),
-      supabase.from('cart_items').select('user_id, product_id, qty, size, updated_at, products(name, subcategory, img, meta, cost, seller)').eq('status', 0)
+      supabase.from('cart_items').select('user_id, product_id, qty, size, updated_at, products(name, subcategory, img, meta, cost, seller)').eq('status', 0),
+      supabase.from('user_base').select('*').order('created_at', { ascending: false }) // 🌟 NAYA: Leads Data
     ]);
 
     if (users) {
@@ -353,6 +371,13 @@ export default function SellerDashboard() {
         return getLatest(b) - getLatest(a);
       });
       setUsersList(enrichedUsers);
+      
+      // 🌟 NAYA: Buyers List Merge Logic (Phone number se link)
+      const baseList = (userBase || []).map(b => {
+          const matchedAppUser = enrichedUsers.find(u => String(u.phone) === String(b.phone));
+          return { ...b, appData: matchedAppUser, notes: safeParseJSON(b.followupnotes, []) };
+      });
+      setBuyersList(baseList);
     }
     setLoading(false);
   };
@@ -585,6 +610,72 @@ export default function SellerDashboard() {
 
   const displayedUsers = filteredUsers.slice(0, visibleUsersCount);
 
+// 🌟 NAYA: Install Counts & System Tag Calculation
+  const totalLeadsCount = buyersList.length;
+  const installedLeadsCount = buyersList.filter(b => b.appData).length;
+
+  const processedBuyers = buyersList.map(b => {
+      const isBuyer = b.appData?.orderCount > 0;
+      const isUser = b.appData && !isBuyer;
+      
+      // 🌟 FIX: System tag (Card par dikhane aur system filter ke liye)
+      const sysTag = isBuyer ? 'Buyer' : isUser ? 'User' : 'Pending Install';
+      
+      // 🌟 FIX: CRM tag (Dropdown filter ke liye Latest note se nikalenge)
+      const latestCrmTag = b.notes?.length > 0 ? b.notes[b.notes.length - 1].tag : 'Potential';
+      
+      return { ...b, sysTag, latestCrmTag };
+  }).filter(b => {
+      if (buyerTagFilter !== 'All') {
+         // Agar filter system tag ka hai (Buyer, User, Pending Install)
+         if (['Buyer', 'User', 'Pending Install'].includes(buyerTagFilter)) {
+             if (b.sysTag !== buyerTagFilter) return false;
+         } else {
+             // Agar filter custom CRM tag ka hai (Potential, Not Interested, etc.)
+             if (b.latestCrmTag !== buyerTagFilter) return false;
+         }
+      }
+
+      const search = userSearchQuery.toLowerCase();
+      if (search && !b.name?.toLowerCase().includes(search) && !b.phone?.includes(search)) return false;
+      return true;
+}).sort((a, b) => {
+      // 🌟 NAYA: Follow-up date sorting (Aaj ke sabse paas wali date sabse upar)
+      if (buyerSort === 'followup') {
+          const getFollowUpDiff = (item: any) => {
+              const notes = item.notes || [];
+              if (notes.length === 0) return Number.MAX_SAFE_INTEGER; // Agar note nahi hai toh sabse end mein
+              const lastDate = notes[notes.length - 1].nextDate;
+              if (!lastDate) return Number.MAX_SAFE_INTEGER; // Agar Next Date blank hai toh sabse end mein
+              
+              // Aaj ki date se absolute difference nikalna (Jo paas wo upar)
+              return Math.abs(new Date(lastDate).getTime() - new Date().getTime());
+          };
+          return getFollowUpDiff(a) - getFollowUpDiff(b); // Ascending order
+      }
+
+      const getVal = (item: any, type: string) => {
+          if (type === 'cart') return item.appData?.lastCart ? new Date(item.appData.lastCart).getTime() : 0;
+          if (type === 'order') return item.appData?.lastOrder ? new Date(item.appData.lastOrder).getTime() : 0;
+          if (type === 'last_seen') return item.appData?.lastSeen ? new Date(item.appData.lastSeen).getTime() : 0;
+          return new Date(item.created_at).getTime(); 
+      };
+      return getVal(b, buyerSort) - getVal(a, buyerSort);
+  });
+
+
+
+  // 🌟 FIX: Apply sorting to App Users too
+  const processedAppUsers = filteredUsers.sort((a, b) => {
+      const getVal = (item: any, type: string) => {
+          if (type === 'cart') return item.lastCart ? new Date(item.lastCart).getTime() : 0;
+          if (type === 'order') return item.lastOrder ? new Date(item.lastOrder).getTime() : 0;
+          if (type === 'last_seen') return item.lastSeen ? new Date(item.lastSeen).getTime() : 0;
+          return new Date(item.created_at).getTime();
+      };
+      return getVal(b, appUserSort) - getVal(a, appUserSort);
+  }).slice(0, visibleUsersCount);
+
   const filteredProducts = myProducts.filter(p => {
     const search = p?.name?.toLowerCase().includes(searchQuery.toLowerCase()) || p?.subcategory?.toLowerCase().includes(searchQuery.toLowerCase());
     const sizes = safeParseJSON(p.meta, {})?.attributes?.available_sizes || {}; const keys = Object.keys(sizes);
@@ -594,11 +685,9 @@ export default function SellerDashboard() {
   });
   
   const filteredOrders = orders.filter(o => {
-    // 🌟 FIX: Toggle ke base par filter (Seller Orders vs Buyer Orders)
     const matchToggle = showSellerOrders ? (o.created_by !== null) : (o.created_by === null);
     const matchSearch = o?.id?.toString().includes(searchQuery) || o?.buyerName?.toLowerCase().includes(searchQuery.toLowerCase()) || o?.city?.toLowerCase().includes(searchQuery.toLowerCase());
     const matchFilter = orderFilter === 'All' || o?.status === orderFilter;
-    
     return matchToggle && matchSearch && matchFilter;
   });
 
@@ -698,30 +787,56 @@ export default function SellerDashboard() {
           </div>
         )}
 
-        {/* ── 🌟 VIEW: USERS LISTING ── */}
+        {/* ── 🌟 VIEW: USERS LISTING & CRM ── */}
         {view === 'users' && (
           <div className="animate-in fade-in duration-300 flex flex-col min-h-full bg-[#F8F9FA]">
-            <div className="p-3 bg-white border-b border-gray-200 flex flex-col gap-3 sticky top-0 z-30 shadow-sm">
-              <div className="flex items-center gap-3 w-full">
-                <div className="flex flex-col items-center justify-center bg-blue-50 text-blue-700 px-3 py-2 rounded-xl border border-blue-100 shrink-0 shadow-sm">
-                   <span className="text-sm font-black leading-none">{filteredUsers.length}</span>
-                   <span className="text-[8px] font-bold uppercase tracking-wider mt-1">Users</span>
+            
+     {/* STICKY HEADER WITH TOGGLES */}
+            <div className="bg-white border-b border-gray-100 flex flex-col sticky top-0 z-30 shadow-sm">
+              <div className="flex bg-gray-50 p-1 m-3 rounded-[14px] border border-gray-100">
+                <button onClick={() => setUserTab('app_users')} className={`flex-1 py-2 text-[11px] font-black uppercase tracking-widest rounded-[10px] transition-all ${userTab === 'app_users' ? 'bg-white text-gray-900 shadow-sm border border-gray-200' : 'text-gray-400 hover:text-gray-600'}`}>App Users</button>
+                <button onClick={() => setUserTab('buyers')} className={`flex-1 py-2 text-[11px] font-black uppercase tracking-widest rounded-[10px] transition-all flex justify-center items-center gap-1.5 ${userTab === 'buyers' ? 'bg-white text-purple-700 shadow-sm border border-gray-200' : 'text-gray-400 hover:text-gray-600'}`}>Leads & Buyers <span className="bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded uppercase tracking-wider text-[8px]">{installedLeadsCount}/{totalLeadsCount} App</span></button>
+              </div>
+
+              <div className="px-3 pb-3 flex flex-col gap-3">
+                <div className="flex items-center gap-2 overflow-x-auto scrollbar-hide w-full pb-1">
+                   <div className="flex flex-col items-center justify-center bg-white rounded-[14px] border border-gray-200 px-3 py-1.5 shrink-0 shadow-sm min-w-[50px]">
+                      <span className="text-[15px] font-black leading-none">{userTab === 'app_users' ? filteredUsers.length : processedBuyers.length}</span>
+                      <span className="text-[8px] font-bold uppercase tracking-widest text-gray-500 mt-1">TOTAL</span>
+                   </div>
+                   <div className="relative flex items-center flex-1 min-w-[140px]">
+                      <div className="absolute left-3 text-gray-400"><Search size={14} /></div>
+                      <input type="text" placeholder="Search..." className="w-full bg-gray-50 text-sm font-semibold rounded-[14px] pl-8 pr-3 py-2.5 outline-none border border-gray-100" value={userSearchQuery} onChange={e => { setUserSearchQuery(e.target.value); setVisibleUsersCount(20); }} />
+                   </div>
+                   <button onClick={() => userTab === 'app_users' ? setIsCreateUserOpen(true) : setIsAddLeadOpen(true)} className="bg-[#111827] text-white w-10 h-10 rounded-[14px] flex items-center justify-center shrink-0 shadow-sm">
+                      <UserPlus size={16}/>
+                   </button>
+                   
+                   <select className="bg-purple-50 text-purple-700 border border-purple-100 text-[10px] font-black uppercase tracking-widest px-3 py-2.5 rounded-[14px] outline-none shrink-0 appearance-none" value={userTab === 'app_users' ? appUserSort : buyerSort} onChange={(e) => userTab === 'app_users' ? setAppUserSort(e.target.value) : setBuyerSort(e.target.value)}>
+                      <option value="last_seen">Last Seen</option>
+                      <option value="order">Last Order</option>
+                      <option value="cart">Last Cart</option>
+                      {/* 🌟 NAYA: Followup Sorting Option (Sirf Buyers tab ke liye) */}
+                      {userTab === 'buyers' && <option value="followup">Next Follow-up</option>}
+                   </select>
+                   
+                   {userTab === 'buyers' && (
+                     <select className="bg-gray-50 text-gray-700 border border-gray-200 text-[10px] font-black uppercase tracking-widest px-3 py-2.5 rounded-[14px] outline-none shrink-0 appearance-none" value={buyerTagFilter} onChange={(e) => setBuyerTagFilter(e.target.value)}>
+                        <option value="All">All Tags</option><option value="Buyer">Buyer</option><option value="User">User</option><option value="Pending Install">Pending Install</option><option value="Potential">Potential</option><option value="Not Interested">Not Interested</option><option value="Shop closed">Shop Closed</option><option value="Quality Issue">Quality Issue</option>
+                     </select>
+                   )}
                 </div>
-                <div className="relative flex items-center flex-1">
-                  <div className="absolute left-3 text-gray-400"><Search size={16} /></div>
-                  <input type="text" placeholder="Search Mobile or Name..." className="w-full bg-gray-100 text-sm font-semibold rounded-xl pl-10 pr-4 py-3 outline-none" value={userSearchQuery} onChange={e => { setUserSearchQuery(e.target.value); setVisibleUsersCount(20); }} />
-                </div>
-                {/* 🌟 NAYA: User create karne ka button */}
-                <button onClick={() => setIsCreateUserOpen(true)} className="bg-gray-900 text-white p-3.5 rounded-xl active:scale-95 flex items-center justify-center shrink-0 shadow-sm">
-                   <UserPlus size={18} />
-                </button>
               </div>
             </div>
 
             <div className="p-3 flex flex-col gap-3 pb-24">
-              {loading ? ( <div className="flex justify-center py-20"><Loader2 className="animate-spin text-gray-400" size={32} /></div> ) : displayedUsers.length === 0 ? ( <div className="text-center py-20 text-gray-400 font-medium text-sm bg-white rounded-2xl border border-gray-200 shadow-sm mx-1 flex flex-col items-center"><Users size={40} className="mb-2 opacity-20"/><p>No users found.</p></div> ) : (
+              {loading ? ( <div className="flex justify-center py-20"><Loader2 className="animate-spin text-gray-400" size={32} /></div> ) : 
+              
+              userTab === 'app_users' ? (
+                /* --- APP USERS LIST --- */
+                processedAppUsers.length === 0 ? ( <div className="text-center py-20 text-gray-400 font-medium text-sm bg-white rounded-2xl border border-gray-200 shadow-sm mx-1 flex flex-col items-center"><Users size={40} className="mb-2 opacity-20"/><p>No users found.</p></div> ) : (
                 <>
-                {displayedUsers.map((u, index) => (
+                {processedAppUsers.map((u, index) => (
                   <div key={u.id || index} className="bg-white rounded-2xl p-4 border border-gray-200 shadow-sm transition-transform">
                     <div className="flex justify-between items-start mb-4">
                       <div className="flex items-center gap-3">
@@ -729,7 +844,6 @@ export default function SellerDashboard() {
                         <div>
                           <h3 className="font-black text-gray-900 text-[15px]">{u.name} <span className="text-[10px] text-green-600 bg-green-50 px-1.5 py-0.5 rounded ml-1">-{u.discount_percent || 0}%</span></h3>
                           <p className="text-[10px] font-bold text-gray-500 mt-0.5"><MapPin size={10} className="inline mr-0.5 mb-0.5"/> {u.city || 'N/A'}, {u.state || 'N/A'}</p>
-                          {/* 🌟 FIX: Only Admin can see the password */}
                           {isAdmin && u.password && (
                             <div onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(u.password); showToast("Password Copied! 🔐"); }} className="flex items-center gap-2 mt-2 bg-red-50/60 px-2 py-1.5 rounded-md border border-red-100 cursor-pointer w-fit">
                               <Lock size={10} className="text-red-500" /><span className="text-[10px] font-bold text-gray-600">Pass: <span className="font-mono text-red-700">{u.password}</span></span><Copy size={12} className="text-red-400 ml-1" />
@@ -738,8 +852,8 @@ export default function SellerDashboard() {
                         </div>
                       </div>
                       <div className="flex gap-2">
-                        <a href={`tel:+91${u.phone}`} className="w-8 h-8 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center active:scale-95 transition-transform"><Phone size={14}/></a>
-                        <a href={getWhatsAppLink(`91${u.phone}`)} target="_blank" rel="noreferrer" className="w-8 h-8 rounded-full bg-green-50 text-green-600 flex items-center justify-center active:scale-95 transition-transform"><MessageCircle size={14}/></a>
+                        <a href={`tel:+91${u.phone}`} className="w-8 h-8 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center active:scale-95 transition-transform"><Phone size={14}/></a>
+                        <a href={getWhatsAppLink(`91${u.phone}`)} target="_blank" rel="noreferrer" className="w-8 h-8 rounded-lg bg-green-50 text-green-600 flex items-center justify-center active:scale-95 transition-transform"><MessageCircle size={14}/></a>
                       </div>
                     </div>
                     <div className="grid grid-cols-3 gap-2 bg-gray-50 p-2 rounded-lg text-center mb-3">
@@ -762,7 +876,56 @@ export default function SellerDashboard() {
                   <button onClick={() => setVisibleUsersCount(prev => prev + 20)} className="w-full py-4 bg-white border border-gray-200 text-blue-600 font-bold text-sm rounded-xl shadow-sm active:scale-95">Load More Users</button>
                 )}
                 </>
-              )}
+              )
+            ) : (
+/* --- BUYERS & CRM LIST --- */
+              processedBuyers.length === 0 ? ( <div className="text-center py-20 text-gray-400 font-medium text-sm bg-white rounded-2xl border border-gray-200 shadow-sm mx-1 flex flex-col items-center"><Users size={40} className="mb-2 opacity-20"/><p>No leads found.</p></div> ) : (
+                <>
+                {processedBuyers.map((b, index) => {
+                  const lastNote = b.notes?.length > 0 ? b.notes[b.notes.length - 1] : null;
+                  
+                  return (
+                  <div key={b.id || index} className="bg-white rounded-[20px] p-4 border border-gray-200 shadow-sm transition-transform mb-2">
+                    <div className="flex justify-between items-start mb-4">
+                      <div>
+                        <h3 className="font-black text-gray-900 text-[16px]">{b.name || 'Unknown'}</h3>
+                        <p className="text-[12px] font-semibold text-gray-500 mt-0.5">{b.phone}</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-black uppercase tracking-widest px-2.5 py-1 rounded-md shrink-0 border border-gray-200 text-gray-600 bg-gray-50">
+                          {b.sysTag}
+                        </span>
+                        <a href={`tel:+91${b.phone}`} className="w-8 h-8 rounded-lg border border-blue-100 bg-blue-50/50 text-blue-500 flex items-center justify-center active:scale-95"><Phone size={14}/></a>
+                        <a href={getWhatsAppLink(`91${b.phone}`)} target="_blank" rel="noreferrer" className="w-8 h-8 rounded-lg border border-green-100 bg-green-50/50 text-green-500 flex items-center justify-center active:scale-95"><MessageCircle size={14}/></a>
+                      </div>
+                    </div>
+
+                    <div className="flex gap-3 items-center mb-4">
+                      <div className="flex-1 bg-[#F8F9FA] rounded-xl border border-gray-100 p-4 min-h-[64px] flex flex-col items-center justify-center text-center relative overflow-hidden">
+                         {lastNote ? (
+                             <>
+                                <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest mb-1.5 flex items-center gap-1.5">{safeFormatDate(lastNote.date).split(',')[0]} <span className="w-1 h-1 rounded-full bg-gray-300"></span> <span className={`px-1.5 py-0.5 rounded border ${lastNote.tag === 'Potential' ? 'bg-blue-50 text-blue-600 border-blue-100' : lastNote.tag === 'Quality Issue' ? 'bg-orange-50 text-orange-600 border-orange-100' : lastNote.tag === 'Not Interested' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-gray-100 text-gray-600 border-gray-200'}`}>{lastNote.tag || 'Potential'}</span></p>
+                                <p className="text-[12px] font-semibold text-gray-700 italic leading-snug">"{lastNote.text}"</p>
+                             </>
+                         ) : (
+                             <p className="text-[12px] font-semibold text-gray-400">No follow-up notes yet.</p>
+                         )}
+                      </div>
+                      <div className="flex flex-col gap-2 shrink-0 pr-1">
+                         <button onClick={() => { setSelectedBuyerForNote(b); setNoteForm({ text: '', nextDate: '', tag: b.latestCrmTag }); setIsNoteSheetOpen(true); }} className="text-[12px] font-bold text-blue-700 underline underline-offset-2 decoration-blue-200 hover:decoration-blue-700">+Add Notes</button>
+                         <button onClick={() => { setViewingNotesUser(b); setIsViewNotesOpen(true); }} className="text-[12px] font-bold text-blue-700 underline underline-offset-2 decoration-blue-200 hover:decoration-blue-700">View Notes</button>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-5">
+                      <div className="flex items-center gap-1.5"><span className="text-[9px] font-black text-gray-400 uppercase tracking-widest">LAST SEEN</span> <span className="text-[10px] font-bold text-gray-800">{b.appData?.lastSeen ? safeFormatDate(b.appData.lastSeen) : '-'}</span></div>
+                      <div className="flex items-center gap-1.5"><span className="text-[9px] font-black text-gray-400 uppercase tracking-widest">LAST ORDER</span> <span className="text-[10px] font-bold text-gray-800">{b.appData?.lastOrder ? safeFormatDate(b.appData.lastOrder) : '-'}</span></div>
+                    </div>
+                  </div>
+                )})}
+                </>
+              )
+            )}
             </div>
           </div>
         )}
@@ -1026,19 +1189,25 @@ export default function SellerDashboard() {
                   <select value={orderStatus} onChange={(e) => setOrderStatus(e.target.value)} className="text-[10px] font-black uppercase tracking-widest px-2 py-1.5 rounded-md shrink-0 h-fit outline-none border bg-gray-50"><option>Pending</option><option>Confirmed</option><option>Dispatched</option><option>Delivered</option><option>Cancelled</option></select>
                 </div>
               </div>
-              <div onClick={() => { navigator.clipboard.writeText(`Name: ${selectedOrder.buyerName}\nPhone: ${selectedOrder.phone}\nAddress: ${selectedOrder.address}, ${selectedOrder.city}, ${selectedOrder.state} - ${selectedOrder.pincode}`); showToast("Copied! ✅"); }} className="text-xs font-semibold text-gray-600 mt-3 bg-gray-50 p-3 rounded-xl border border-gray-100">
-                <p className="flex items-center gap-2"><User size={14}/> {selectedOrder.buyerName}</p><p className="flex items-center gap-2 mt-1.5"><MapPin size={14}/> {selectedOrder.address}, {selectedOrder.city}</p>
-                <div className="flex items-center gap-3 mt-3 pt-3 border-t border-gray-200">
-                  <a href={`tel:+91${selectedOrder.phone}`} className="flex-1 flex justify-center items-center gap-1.5 text-[11px] font-bold text-blue-700 bg-blue-100 px-3 py-2 rounded-lg"><Phone size={14}/> Call</a>
-                  <a href={getWhatsAppLink(`91${selectedOrder.phone}`)} target="_blank" rel="noreferrer" className="flex-1 flex justify-center items-center gap-1.5 text-[11px] font-bold text-green-700 bg-green-100 px-3 py-2 rounded-lg"><MessageCircle size={14}/> WhatsApp</a>
+              <div className="text-xs font-semibold text-gray-600 mt-3 bg-gray-50 p-3 rounded-xl border border-gray-100">
+                {/* 🌟 FIX: Copy action sirf name aur address wale hisse par lagaya */}
+                <div onClick={() => { navigator.clipboard.writeText(`Name: ${selectedOrder.buyerName}\nPhone: ${selectedOrder.phone}\nAddress: ${selectedOrder.address}, ${selectedOrder.city}, ${selectedOrder.state} - ${selectedOrder.pincode}`); showToast("Copied! ✅"); }} className="cursor-pointer active:scale-[0.98] transition-transform">
+                  <p className="flex items-center gap-2"><User size={14}/> {selectedOrder.buyerName}</p>
+                  <p className="flex items-center gap-2 mt-1.5"><MapPin size={14}/> {selectedOrder.address}, {selectedOrder.city}</p>
+                  <p className="text-[9px] text-gray-400 mt-2 flex items-center gap-1"><Copy size={10}/> Tap to copy details</p>
                 </div>
                 
-                {/* 🌟 FIX: TRACKING URL WAPAS AA GAYA */}
+                <div className="flex items-center gap-3 mt-3 pt-3 border-t border-gray-200">
+                  {/* 🌟 FIX: Stop propagation aur alag links */}
+                  <a onClick={(e) => e.stopPropagation()} href={`tel:+91${selectedOrder.phone}`} className="flex-1 flex justify-center items-center gap-1.5 text-[11px] font-bold text-blue-700 bg-blue-100 px-3 py-2 rounded-lg active:scale-95 transition-transform"><Phone size={14}/> Call</a>
+                  <a onClick={(e) => e.stopPropagation()} href={getWhatsAppLink(`91${selectedOrder.phone}`)} target="_blank" rel="noreferrer" className="flex-1 flex justify-center items-center gap-1.5 text-[11px] font-bold text-green-700 bg-green-100 px-3 py-2 rounded-lg active:scale-95 transition-transform"><MessageCircle size={14}/> WhatsApp</a>
+                </div>
+                
                 <div className="mt-3 pt-3 border-t border-gray-200">
                   <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1 block">Tracking Link</label>
-                  <input type="text" className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm font-medium outline-none focus:border-blue-500" placeholder="Paste tracking link here..." value={trackingUrl} onChange={(e) => setTrackingUrl(e.target.value)} />
+                  {/* 🌟 FIX: Input box pe click karne se copy action nahi hoga */}
+                  <input type="text" onClick={(e) => e.stopPropagation()} className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm font-medium outline-none focus:border-blue-500" placeholder="Paste tracking link here..." value={trackingUrl} onChange={(e) => setTrackingUrl(e.target.value)} />
                 </div>
-                
               </div>
             </div>
 
@@ -1246,6 +1415,190 @@ export default function SellerDashboard() {
                 {isCreatingUser ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
                 {isCreatingUser ? 'Creating...' : 'Create Customer'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* 🌟 NAYA: ADD NOTE BOTTOM SHEET */}
+      {isNoteSheetOpen && selectedBuyerForNote && (
+        <div className="fixed inset-0 z-[7000] flex justify-end flex-col print-hidden">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsNoteSheetOpen(false)}></div>
+          <div className="bg-white w-full max-w-md mx-auto rounded-t-[2rem] relative z-10 animate-in slide-in-from-bottom-full duration-300 shadow-2xl flex flex-col">
+            <div className="p-4 border-b border-gray-100 flex justify-between items-center">
+              <div>
+                 <h3 className="font-black text-gray-900 uppercase tracking-widest text-sm flex items-center gap-2"><Edit2 size={16} className="text-purple-600"/> Add Follow-up Note</h3>
+                 <p className="text-[10px] font-bold text-gray-500 mt-0.5">{selectedBuyerForNote.name}</p>
+              </div>
+              <button onClick={() => setIsNoteSheetOpen(false)} className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-gray-500 hover:bg-gray-200"><X size={16}/></button>
+            </div>
+            
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Discussion Summary</label>
+                <textarea placeholder="Ex: Call picked, asked for catalogue..." className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm font-semibold focus:border-purple-500 outline-none h-24" value={noteForm.text} onChange={e => setNoteForm({...noteForm, text: e.target.value})} />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                 <div>
+                   <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Next Follow-up</label>
+                   <input type="date" className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm font-black text-gray-700 focus:border-purple-500 outline-none" value={noteForm.nextDate} onChange={e => setNoteForm({...noteForm, nextDate: e.target.value})} />
+                 </div>
+                 <div>
+                   <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Custom Tag</label>
+                   <select className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm font-black focus:border-purple-500 outline-none" value={noteForm.tag} onChange={e => setNoteForm({...noteForm, tag: e.target.value})}>
+                       <option value="Potential">Potential</option><option value="Not Interested">Not Interested</option><option value="Shop closed">Shop closed</option><option value="Quality Issue">Quality Issue</option>
+                   </select>
+                 </div>
+              </div>
+
+              <button 
+                onClick={async () => {
+                   if (!noteForm.text) return showToast("Please write a note!");
+                   setIsSavingNote(true);
+                   try {
+                     // 🌟 FIX: Note ke andar tag save hoga
+                     const newNote = { date: getLocalTimestamp(), text: noteForm.text, nextDate: noteForm.nextDate, tag: noteForm.tag };
+                     const updatedNotes = [...(selectedBuyerForNote.notes || []), newNote];
+                     
+                     // 🌟 FIX: Raw array bhej rahe hain taaki DB JSONB error na de. Aur main DB 'tag' column mein System Tag bhej rahe hain.
+                     const { error } = await supabase.from('user_base')
+                          .update({ followupnotes: updatedNotes, tag: selectedBuyerForNote.sysTag })
+                          .eq('phone', selectedBuyerForNote.phone);
+                     
+                     if(error) throw error;
+                     
+                     // Local state update
+                     setBuyersList(prev => prev.map(b => String(b.phone) === String(selectedBuyerForNote.phone) ? { ...b, followupnotes: updatedNotes, notes: updatedNotes, latestCrmTag: noteForm.tag } : b));
+                     setIsNoteSheetOpen(false); showToast("Note Added! ✅");
+                   } catch(e:any) { alert("Error: " + e.message); } finally { setIsSavingNote(false); }
+                }} 
+                disabled={isSavingNote}
+                className="w-full mt-2 bg-purple-600 text-white py-4 rounded-xl font-black uppercase tracking-widest text-xs shadow-md active:scale-95 flex justify-center items-center gap-2"
+              >
+                {isSavingNote ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} Save Note
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 🌟 NAYA: MANUALLY ADD LEAD BOTTOM SHEET */}
+      {isAddLeadOpen && (
+        <div className="fixed inset-0 z-[7000] flex justify-end flex-col print-hidden">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsAddLeadOpen(false)}></div>
+          <div className="bg-white w-full max-w-md mx-auto rounded-t-[2rem] relative z-10 animate-in slide-in-from-bottom-full duration-300 shadow-2xl flex flex-col">
+            <div className="p-4 border-b border-gray-100 flex justify-between items-center">
+              <h3 className="font-black text-gray-900 uppercase tracking-widest text-sm flex items-center gap-2"><UserPlus size={18} className="text-purple-600"/> Add Manual Lead</h3>
+              <button onClick={() => setIsAddLeadOpen(false)} className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-gray-500 hover:bg-gray-200"><X size={16}/></button>
+            </div>
+            
+            <div className="p-5 space-y-4">
+              <div><input type="text" placeholder="Lead Name / Shop Name" className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm font-semibold focus:border-purple-500 outline-none" value={leadForm.name} onChange={e => setLeadForm({...leadForm, name: e.target.value})} /></div>
+              <div><input type="tel" placeholder="Mobile Number" maxLength={10} className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm font-black focus:border-purple-500 outline-none" value={leadForm.phone} onChange={e => setLeadForm({...leadForm, phone: e.target.value.replace(/\D/g, '')})} /></div>
+              <div>
+                <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Initial Custom Tag</label>
+                <select className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm font-black focus:border-purple-500 outline-none" value={leadForm.tag} onChange={e => setLeadForm({...leadForm, tag: e.target.value})}>
+                    <option value="Potential">Potential</option><option value="Not Interested">Not Interested</option><option value="Shop closed">Shop closed</option><option value="Quality Issue">Quality Issue</option>
+                </select>
+              </div>
+
+              <button 
+                onClick={async () => {
+                   if (leadForm.phone.length !== 10) return showToast("Enter 10 digit number!");
+                   setIsCreatingUser(true);
+                   try {
+                     // 🌟 FIX: Pehla note banake custom tag usme daal rahe hain aur DB Tag mein 'Pending Install'
+                     const initialNote = [{ date: getLocalTimestamp(), text: "Lead manually added to system.", nextDate: "", tag: leadForm.tag }];
+                     await supabase.from('user_base').upsert({ phone: leadForm.phone, name: leadForm.name, tag: 'Pending Install', followupnotes: initialNote }, { onConflict: 'phone', ignoreDuplicates: false });
+                     
+                     fetchUsersData(); setIsAddLeadOpen(false); setLeadForm({ name: '', phone: '', tag: 'Potential' }); showToast("Lead Added! ✅");
+                   } catch(e:any) { alert(e.message); } finally { setIsCreatingUser(false); }
+                }} 
+                disabled={isCreatingUser}
+                className="w-full mt-2 bg-gray-900 text-white py-4 rounded-xl font-black uppercase tracking-widest text-xs shadow-md active:scale-95 flex justify-center items-center gap-2"
+              >
+                {isCreatingUser ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} Save Lead
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 🌟 NAYA: MANUALLY ADD LEAD BOTTOM SHEET */}
+      {isAddLeadOpen && (
+        <div className="fixed inset-0 z-[7000] flex justify-end flex-col print-hidden">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsAddLeadOpen(false)}></div>
+          <div className="bg-white w-full max-w-md mx-auto rounded-t-[2rem] relative z-10 animate-in slide-in-from-bottom-full duration-300 shadow-2xl flex flex-col">
+            <div className="p-4 border-b border-gray-100 flex justify-between items-center">
+              <h3 className="font-black text-gray-900 uppercase tracking-widest text-sm flex items-center gap-2"><UserPlus size={18} className="text-purple-600"/> Add Manual Lead</h3>
+              <button onClick={() => setIsAddLeadOpen(false)} className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-gray-500 hover:bg-gray-200"><X size={16}/></button>
+            </div>
+            
+            <div className="p-5 space-y-4">
+              <div><input type="text" placeholder="Lead Name / Shop Name" className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm font-semibold focus:border-purple-500 outline-none" value={leadForm.name} onChange={e => setLeadForm({...leadForm, name: e.target.value})} /></div>
+              <div><input type="tel" placeholder="Mobile Number" maxLength={10} className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm font-black focus:border-purple-500 outline-none" value={leadForm.phone} onChange={e => setLeadForm({...leadForm, phone: e.target.value.replace(/\D/g, '')})} /></div>
+              <div>
+                <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Lead Status (Tag)</label>
+                <select className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm font-black focus:border-purple-500 outline-none" value={leadForm.tag} onChange={e => setLeadForm({...leadForm, tag: e.target.value})}>
+                    <option value="Potential">Potential</option><option value="Not Interested">Not Interested</option><option value="Shop closed">Shop closed</option><option value="Quality Issue">Quality Issue</option><option value="buyer">Buyer</option>
+                </select>
+              </div>
+
+              <button 
+                onClick={async () => {
+                   if (leadForm.phone.length !== 10) return showToast("Enter 10 digit number!");
+                   setIsCreatingUser(true);
+                   try {
+                     await supabase.from('user_base').upsert({ phone: leadForm.phone, name: leadForm.name, tag: leadForm.tag }, { onConflict: 'phone', ignoreDuplicates: false });
+                     fetchUsersData(); setIsAddLeadOpen(false); setLeadForm({ name: '', phone: '', tag: 'Potential' }); showToast("Lead Added! ✅");
+                   } catch(e:any) { alert(e.message); } finally { setIsCreatingUser(false); }
+                }} 
+                disabled={isCreatingUser}
+                className="w-full mt-2 bg-gray-900 text-white py-4 rounded-xl font-black uppercase tracking-widest text-xs shadow-md active:scale-95 flex justify-center items-center gap-2"
+              >
+                {isCreatingUser ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} Save Lead
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* 🌟 NAYA: VIEW NOTES BOTTOM SHEET */}
+      {isViewNotesOpen && viewingNotesUser && (
+        <div className="fixed inset-0 z-[7000] flex justify-end flex-col print-hidden">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsViewNotesOpen(false)}></div>
+          <div className="bg-[#F8F9FA] w-full max-w-md mx-auto rounded-t-[2rem] relative z-10 animate-in slide-in-from-bottom-full duration-300 shadow-2xl flex flex-col max-h-[85vh]">
+            <div className="p-4 border-b border-gray-200 bg-white rounded-t-[2rem] flex justify-between items-center shrink-0">
+              <div>
+                 <h3 className="font-black text-gray-900 uppercase tracking-widest text-sm flex items-center gap-2"><Activity size={16} className="text-purple-600"/> Follow-up Journey</h3>
+                 <p className="text-[10px] font-bold text-gray-500 mt-0.5">{viewingNotesUser.name}</p>
+              </div>
+              <button onClick={() => setIsViewNotesOpen(false)} className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-gray-500 hover:bg-gray-200"><X size={16}/></button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5 space-y-4">
+               {(!viewingNotesUser.notes || viewingNotesUser.notes.length === 0) ? (
+                  <p className="text-center text-gray-400 text-sm font-semibold py-10">No journey details available yet.</p>
+               ) : (
+                  <div className="relative border-l-2 border-gray-200 ml-3 space-y-6">
+                    {[...viewingNotesUser.notes].reverse().map((note, idx) => (
+                      <div key={idx} className="relative pl-6">
+                        <span className="absolute -left-[9px] top-1 w-4 h-4 rounded-full border-[3px] border-white bg-purple-500 shadow-sm"></span>
+                        <div className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm">
+                          <div className="flex justify-between items-start mb-1.5">
+                             <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">{new Date(note.date).toLocaleDateString('en-IN', {day: 'numeric', month: 'short', year: 'numeric'})}</span>
+                             {/* 🌟 FIX: Note ke andar tag show ho raha hai journey mein */}
+                             <span className={`text-[8px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border ${note.tag === 'Potential' ? 'bg-blue-50 text-blue-600 border-blue-100' : note.tag === 'Quality Issue' ? 'bg-orange-50 text-orange-600 border-orange-100' : note.tag === 'Not Interested' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-gray-100 text-gray-600 border-gray-200'}`}>{note.tag || 'Potential'}</span>
+                          </div>
+                          <p className="text-[13px] font-semibold text-gray-800 italic leading-relaxed">"{note.text}"</p>
+                          {note.nextDate && (
+                            <div className="mt-3 pt-3 border-t border-gray-50 flex items-center gap-1.5">
+                              <Calendar size={12} className="text-orange-500"/>
+                              <span className="text-[10px] font-black text-orange-600 uppercase tracking-widest">Next Follow-up: {new Date(note.nextDate).toLocaleDateString('en-IN', {day: 'numeric', month: 'short', year: 'numeric'})}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+               )}
             </div>
           </div>
         </div>
@@ -1734,6 +2087,13 @@ export default function SellerDashboard() {
                           }
                       });
                       await supabase.from('order_details').insert(inserts);
+                      
+                      // 🌟 FIX: Order place hone par use strictly 'Buyer' tag assign ho jayega
+                      await supabase.from('user_base').upsert(
+                         { phone: String(draftUser.phone), name: draftUser.name, tag: 'Buyer' }, 
+                         { onConflict: 'phone', ignoreDuplicates: false }
+                      ).catch(()=>{});
+
                       showToast("Order Created Successfully! 🎉"); setIsCreateOrderOpen(false); setDraftItems([]); setDraftUser(null); fetchOrders(); setView('orders');
                     } catch (e: any) { alert(e.message); } finally { setIsSavingOrder(false); }
                  }} className="w-full bg-[#008A00] text-white py-4 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 active:scale-95 shadow-[0_8px_20px_rgba(0,138,0,0.3)]">

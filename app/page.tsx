@@ -1087,7 +1087,7 @@ const openOrderDetails = async (order: any) => {
            const boxSize = group.productRef.boxSize || 6;
            const boxes = Math.ceil(qtyPieces / boxSize);
            const isOOS = group.oosSizes.includes(size);
-           msg += `• Size ${size} | ${boxes} Box (${qtyPieces} Pcs)${isOOS ? ' - OOS' : ''}\n`;
+           msg += `• Size ${size} | ${boxes} Box (${qtyPieces} Pcs)${isOOS ? ' - ❌ OOS' : ''}\n`;
         });
         msg += `\n`;
       });
