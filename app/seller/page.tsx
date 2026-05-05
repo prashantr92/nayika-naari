@@ -245,11 +245,17 @@ export default function SellerDashboard() {
 
   useEffect(() => {
     if (currentUser) {
-      fetchCategories(); 
-      if (view === 'dashboard') { fetchMyProducts(); fetchOrders(); fetchDashboardStats(); }
-      else if (view === 'orders') { fetchOrders(); }
-      else if (view === 'products') { fetchMyProducts(); }
-      else if (view === 'users') { fetchUsersData(); }
+      // 🌟 FIX: Agar data pehle se hai toh wapas fetch na ho (UI instantly load hogi)
+      if (categories.length === 0) fetchCategories(); 
+      
+      if (view === 'dashboard') { 
+          fetchDashboardStats(); 
+          if (myProducts.length === 0) fetchMyProducts(); 
+          if (orders.length === 0) fetchOrders(); 
+      }
+      else if (view === 'orders' && orders.length === 0) { fetchOrders(); }
+      else if (view === 'products' && myProducts.length === 0) { fetchMyProducts(); }
+      else if (view === 'users' && usersList.length === 0) { fetchUsersData(); }
     }
   }, [currentUser, view]);
 
@@ -465,13 +471,22 @@ export default function SellerDashboard() {
       }
 
       let calculatedFinalAmount = 0; let isQtyChanged = false;
+      // 🌟 FIX: Concurrent updates (Saare items ek sath update honge)
+      const updatePromises = []; 
+
       if (orderItems.length > 0) {
         for (const item of orderItems) {
           calculatedFinalAmount += editedQtys[item.id] * item.rate;
           const origQ = item.remainingQty !== undefined && item.remainingQty !== null ? item.remainingQty : item.qty;
-          if (editedQtys[item.id] !== origQ) isQtyChanged = true;
-          await supabase.from('order_details').update({ remainingQty: editedQtys[item.id] }).eq('id', item.id);
+          
+          if (editedQtys[item.id] !== origQ) {
+              isQtyChanged = true;
+              // 🌟 FIX: Sirf wahi item update hoga jiski Qty change hui hai (Optimized)
+              updatePromises.push(supabase.from('order_details').update({ remainingQty: editedQtys[item.id] }).eq('id', item.id));
+          }
         }
+        // 🌟 FIX: Sabko ek sath wait karo, Time bachao!
+        if (updatePromises.length > 0) await Promise.all(updatePromises);
       } else calculatedFinalAmount = selectedOrder.amount;
 
       const validNewItems = newOrderItems.filter(item => item.qty > 0);
@@ -737,7 +752,28 @@ export default function SellerDashboard() {
             <p className="text-[10px] text-gray-400 font-medium">Welcome, {currentUser.name}</p>
           </div>
         </div>
-        <button onClick={() => router.replace('/')} className="text-[10px] font-bold bg-white/10 px-3 py-1.5 rounded border border-white/20 active:scale-95 flex items-center gap-1">BUYER VIEW <ChevronRight size={12}/></button>
+        
+        {/* 🌟 NAYA: Refresh Icon & Buyer View Button */}
+        <div className="flex items-center gap-2">
+          <button 
+            onClick={() => {
+               showToast("Refreshing Data... 🔄");
+               try {
+                 fetchDashboardStats();
+                 fetchMyProducts();
+                 fetchOrders();
+                 fetchUsersData();
+               } catch (e) {}
+            }} 
+            className="w-8 h-8 flex items-center justify-center bg-white/10 rounded border border-white/20 active:scale-95 transition-transform"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 2v6h-6"></path><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path></svg>
+          </button>
+
+          <button onClick={() => router.replace('/')} className="text-[10px] font-bold bg-white/10 px-3 py-1.5 rounded border border-white/20 active:scale-95 flex items-center gap-1">
+            BUYER VIEW <ChevronRight size={12}/>
+          </button>
+        </div>
       </header>
 
       {/* 🌟 FIX: 'pb-20' yahan main container par add kiya */}
@@ -1069,9 +1105,27 @@ export default function SellerDashboard() {
                       <div className="flex items-center gap-4 text-[11px] font-semibold text-gray-600 bg-gray-50 p-2 rounded-lg">
                         <div className="flex items-center gap-1"><Package size={14}/> {o.box} Box</div><div className="flex items-center gap-1"><SlidersHorizontal size={14}/> {o.pcs} Pcs</div><div className="flex items-center gap-1"><MapPin size={14}/> {o.city}</div>
                       </div>
-                      <div className="mt-3 flex items-center gap-2">
-                        <span className={`text-[10px] font-black uppercase tracking-widest px-2.5 py-1 rounded-md shrink-0 ${o.status === 'Dispatched' ? 'bg-blue-50 text-blue-700' : o.status === 'Delivered' ? 'bg-[#E5F7ED] text-[#008A00]' : o.status === 'Cancelled' ? 'bg-red-50 text-red-600' : 'bg-orange-50 text-orange-600'}`}>{o.status}</span>
-                        {(o.status === 'Confirmed' && safeParseJSON(o.meta, {})?.expectedDispatch) && <span className="text-[10px] font-bold text-purple-600 bg-purple-50 px-2 py-1 rounded border border-purple-100 flex items-center gap-1"><Calendar size={10} /> {new Date(safeParseJSON(o.meta, {})?.expectedDispatch).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}</span>}
+                      {/* 🌟 FIX: Updated bottom row to include Track button with justify-between */}
+                      <div className="mt-3 flex items-center justify-between w-full">
+                        <div className="flex items-center gap-2">
+                          <span className={`text-[10px] font-black uppercase tracking-widest px-2.5 py-1 rounded-md shrink-0 ${o.status === 'Dispatched' ? 'bg-blue-50 text-blue-700' : o.status === 'Delivered' ? 'bg-[#E5F7ED] text-[#008A00]' : o.status === 'Cancelled' ? 'bg-red-50 text-red-600' : 'bg-orange-50 text-orange-600'}`}>{o.status}</span>
+                          {(o.status === 'Confirmed' && safeParseJSON(o.meta, {})?.expectedDispatch) && <span className="text-[10px] font-bold text-purple-600 bg-purple-50 px-2 py-1 rounded border border-purple-100 flex items-center gap-1"><Calendar size={10} /> {new Date(safeParseJSON(o.meta, {})?.expectedDispatch).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}</span>}
+                        </div>
+
+                        {/* 🌟 NAYA: Track Order Button (Only visible if tracking link exists) */}
+                        {o.tracking && (
+                          <button 
+                            onClick={(e) => {
+                               e.stopPropagation(); // Taki order details open na ho jaye
+                               let url = o.tracking.trim();
+                               if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+                               window.open(url, '_blank');
+                            }}
+                            className="text-[11px] font-bold text-red-500 border border-red-500 px-5 py-1 rounded-md hover:bg-red-50 active:scale-95 transition-all tracking-widest uppercase"
+                          >
+                            Track
+                          </button>
+                        )}
                       </div>
                     </div>
                   )
@@ -2089,10 +2143,11 @@ export default function SellerDashboard() {
                       await supabase.from('order_details').insert(inserts);
                       
                       // 🌟 FIX: Order place hone par use strictly 'Buyer' tag assign ho jayega
+                      // Supabase queries mein error handle karne ke liye try-catch block use hota hai jo humne pehle hi upar lagaya hua hai
                       await supabase.from('user_base').upsert(
                          { phone: String(draftUser.phone), name: draftUser.name, tag: 'Buyer' }, 
                          { onConflict: 'phone', ignoreDuplicates: false }
-                      ).catch(()=>{});
+                      );
 
                       showToast("Order Created Successfully! 🎉"); setIsCreateOrderOpen(false); setDraftItems([]); setDraftUser(null); fetchOrders(); setView('orders');
                     } catch (e: any) { alert(e.message); } finally { setIsSavingOrder(false); }

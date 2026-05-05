@@ -619,13 +619,51 @@ const processTruckUpdate = (baseProduct: any) => {
     }
   }, [view]);
 
+  // 🌟 NAYA: Fisher-Yates Shuffle Algorithm for Randomization
+  const shuffleArray = (array: any[]) => {
+      let currentIndex = array.length, randomIndex;
+      while (currentIndex !== 0) {
+          randomIndex = Math.floor(Math.random() * currentIndex);
+          currentIndex--;
+          [array[currentIndex], array[randomIndex]] = [array[randomIndex], array[currentIndex]];
+      }
+      return array;
+  };
+
   useEffect(() => {
     async function getProducts() {
       if (view === 'plp' && products.length === 0) {
         setLoading(true);
-        // 🌟 FIX: 'status' wagerah ignore karke sirf UI wale columns select kiye
         const { data } = await supabase.from('products').select('id, name, subcategory, cost, mrp, discount, description, meta, img, seller, createdAt').order('id', { ascending: false });
-        setProducts(data || []);
+        
+        if (data && data.length > 0) {
+           // 1. Data ko random shuffle karo
+           let randomizedData = shuffleArray([...data]);
+
+           // 2. Active/Inactive/Partial Check karke Out-of-Stock wale items ko end mein bhej do
+           randomizedData.sort((a, b) => {
+               const getStatus = (p: any) => {
+                  const sizes = safeParseJSON(p.meta, {})?.attributes?.available_sizes || {}; 
+                  const keys = Object.keys(sizes);
+                  if (keys.length === 0) return 0; // Inactive
+                  const activeCount = keys.filter(k => sizes[k].is_active !== false).length;
+                  return activeCount === keys.length ? 2 : activeCount === 0 ? 0 : 1; 
+                  // 2 = Active, 1 = Partial, 0 = Inactive
+               };
+               
+               const statusA = getStatus(a);
+               const statusB = getStatus(b);
+               
+               // Inactive items ko neeche push karo
+               if (statusA > statusB) return -1;
+               if (statusA < statusB) return 1;
+               return 0; // Agar same status hai, toh Random order hi rakho
+           });
+
+           setProducts(randomizedData);
+        } else {
+           setProducts([]);
+        }
         setLoading(false);
       }
     }
