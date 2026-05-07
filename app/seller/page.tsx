@@ -348,7 +348,7 @@ export default function SellerDashboard() {
     }
 
     const [{ data: users }, { data: allOrders }, { data: cart }, { data: userBase }] = await Promise.all([
-      supabase.from('users').select('id, name, phone, city, state, address, pincode, password, discount_percent, meta, created_at').order('id', { ascending: false }),
+      supabase.from('users').select('id, name, phone, city, state, address, pincode, password, discount_percent, meta, logs, created_at').order('id', { ascending: false }),
       supabase.from('orders').select('id, userid, createdAt'),
       supabase.from('cart_items').select('user_id, product_id, qty, size, updated_at, products(name, subcategory, img, meta, cost, seller)').eq('status', 0),
       supabase.from('user_base').select('*').order('created_at', { ascending: false }) // 🌟 NAYA: Leads Data
@@ -427,7 +427,14 @@ export default function SellerDashboard() {
 
     const { data: items } = await supabase.from('order_details').select('id, productid, size, qty, remainingQty, rate, meta').eq('orderid', updatedOrder.id);
     if (items && items.length > 0) {
-      const parsedItems = items.map(item => ({ ...item, meta: safeParseJSON(item.meta, {}) }));
+      // 🌟 FIX: Seller Check lagaya taaki dusre sellers ke items mix na hon
+      let allowedItems = items;
+      if (!isAdmin) {
+         const myProductIds = new Set(myProducts.map(p => p.id));
+         allowedItems = items.filter(item => myProductIds.has(item.productid));
+      }
+
+      const parsedItems = allowedItems.map(item => ({ ...item, meta: safeParseJSON(item.meta, {}) }));
       setOrderItems(parsedItems);
       const qtys: any = {};
       parsedItems.forEach((item: any) => {
@@ -513,16 +520,19 @@ export default function SellerDashboard() {
             rate: item.rate,
             userid: selectedOrder.userid, 
             box: calculatedBoxes,         
-            meta: JSON.stringify({ 
+            // 🌟 FIX: JSON.stringify hata diya taaki proper object format DB mein jaye
+            meta: { 
                 name: item.product.name, 
                 img: safeParseJSON(item.product.img, {images:[]}).images[0] || '',
                 mrp: item.product.mrp, 
                 updatedBy: currentUser.id 
-            })
+            }
           };
         });
 
-        await supabase.from('order_details').insert(inserts);
+        // 🌟 FIX: Proper Error Handling taaki silent fail na ho
+        const { error: insertError } = await supabase.from('order_details').insert(inserts);
+        if (insertError) throw insertError;
         calculatedFinalAmount += newItemsAmount; 
         isQtyChanged = true;
         setNewOrderItems([]); 
@@ -583,14 +593,78 @@ export default function SellerDashboard() {
   const removeNewImage = (index: number) => { setUploadImages(prev => prev.filter((_, i) => i !== index)); setUploadImagePreviews(prev => prev.filter((_, i) => i !== index)); };
   const removeExistingImage = (index: number) => { setExistingImages(prev => prev.filter((_, i) => i !== index)); };
 
+ // 🌟 NAYA: Image Compression Helper (Bina quality lose kiye size chota karega)
+  const compressImage = (file: File): Promise<File> => {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = (event) => {
+        const img = new window.Image();
+        img.src = event.target?.result as string;
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          // Max dimension 1200px rakha hai jo e-commerce ke liye best aur ultra-sharp hota hai
+          const MAX_WIDTH = 1200; 
+          const MAX_HEIGHT = 1600;
+          let width = img.width;
+          let height = img.height;
+
+          if (width > height && width > MAX_WIDTH) {
+            height *= MAX_WIDTH / width;
+            width = MAX_WIDTH;
+          } else if (height > MAX_HEIGHT) {
+            width *= MAX_HEIGHT / height;
+            height = MAX_HEIGHT;
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx?.drawImage(img, 0, 0, width, height);
+          
+          // Image ko modern WEBP format mein convert karega 85% high quality ke sath (Sabse chota size)
+          canvas.toBlob((blob) => {
+            if (blob) {
+              const newFileName = file.name.replace(/\.[^/.]+$/, "") + ".webp";
+              const newFile = new File([blob], newFileName, { type: 'image/webp', lastModified: Date.now() });
+              resolve(newFile);
+            } else {
+              resolve(file); // Agar kisi wajah se fail hua, toh original file upload ho jayegi
+            }
+          }, 'image/webp', 0.85); 
+        };
+        img.onerror = () => resolve(file);
+      };
+      reader.onerror = () => resolve(file);
+    });
+  };
+
+  // 🌟 TUMHARA MAIN UPLOAD FUNCTION (Update ke sath)
   const handleUploadProduct = async () => {
     if (!uploadForm.name || !uploadForm.subcategory || !uploadForm.mrp || !uploadForm.cost || (uploadImages.length === 0 && existingImages.length === 0)) return alert("Fill required fields and add 1 image.");
     setIsUploading(true);
     try {
       const imageUrls: string[] = [];
-      for (const file of uploadImages) {
+      for (const originalFile of uploadImages) {
+        
+        // 🌟 1. Image Compress karo pehle
+        const file = await compressImage(originalFile);
+        
         const filePath = `product_images/${currentUser.id}/${Date.now()}-${Math.random()}.${file.name.split('.').pop()}`;
-        await supabase.storage.from('product-images').upload(filePath, file);
+        
+        // 🌟 2. 1-Year Cache Control ke sath upload karo
+        const { error: uploadError } = await supabase.storage
+          .from('product-images')
+          .upload(filePath, file, {
+             cacheControl: '31536000', // 1 Saal tak image browser mein fix rahegi
+             upsert: false
+          });
+          
+        if (uploadError) {
+          console.error("Upload failed for: ", file.name, uploadError);
+          throw uploadError; // Error aane par aage execution rok dega aur catch block me jayega
+        }
+
         imageUrls.push(supabase.storage.from('product-images').getPublicUrl(filePath).data.publicUrl);
       }
       
@@ -603,7 +677,11 @@ export default function SellerDashboard() {
       
       showToast(isEditMode ? "Updated!" : "Uploaded!"); resetUploadForm(); fetchMyProducts();
       if (isEditMode) setView('products'); else window.scrollTo(0,0);
-    } catch (e: any) { alert("Failed: " + e.message); } finally { setIsUploading(false); }
+    } catch (e: any) { 
+      alert("Failed: " + e.message); 
+    } finally { 
+      setIsUploading(false); 
+    }
   };
 
   const resetUploadForm = () => { setIsEditMode(false); setEditingProductId(null); setUploadForm({ name: '', subcategory: '', mrp: '', cost: '', description: '', boxSize: '6' }); setUploadImages([]); setUploadImagePreviews([]); setExistingImages([]); setSizeConfig({}); };
@@ -680,8 +758,21 @@ export default function SellerDashboard() {
 
 
 
-  // 🌟 FIX: Apply sorting to App Users too
+// 🌟 FIX: Apply sorting to App Users (First Tab Only) with Logs logic
   const processedAppUsers = filteredUsers.sort((a, b) => {
+      if (appUserSort === 'followup') {
+          const getFollowUpDiff = (item: any) => {
+              const logs = Array.isArray(item.logs) ? item.logs : safeParseJSON(item.logs, []);
+              const notes = logs.filter((l: any) => l.type === 'note' || l.text);
+              if (notes.length === 0) return Number.MAX_SAFE_INTEGER;
+              const lastDate = notes[notes.length - 1].nextDate;
+              if (!lastDate) return Number.MAX_SAFE_INTEGER;
+              
+              return Math.abs(new Date(lastDate).getTime() - new Date().getTime());
+          };
+          return getFollowUpDiff(a) - getFollowUpDiff(b);
+      }
+
       const getVal = (item: any, type: string) => {
           if (type === 'cart') return item.lastCart ? new Date(item.lastCart).getTime() : 0;
           if (type === 'order') return item.lastOrder ? new Date(item.lastOrder).getTime() : 0;
@@ -831,7 +922,7 @@ export default function SellerDashboard() {
             <div className="bg-white border-b border-gray-100 flex flex-col sticky top-0 z-30 shadow-sm">
               <div className="flex bg-gray-50 p-1 m-3 rounded-[14px] border border-gray-100">
                 <button onClick={() => setUserTab('app_users')} className={`flex-1 py-2 text-[11px] font-black uppercase tracking-widest rounded-[10px] transition-all ${userTab === 'app_users' ? 'bg-white text-gray-900 shadow-sm border border-gray-200' : 'text-gray-400 hover:text-gray-600'}`}>App Users</button>
-                <button onClick={() => setUserTab('buyers')} className={`flex-1 py-2 text-[11px] font-black uppercase tracking-widest rounded-[10px] transition-all flex justify-center items-center gap-1.5 ${userTab === 'buyers' ? 'bg-white text-purple-700 shadow-sm border border-gray-200' : 'text-gray-400 hover:text-gray-600'}`}>Leads & Buyers <span className="bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded uppercase tracking-wider text-[8px]">{installedLeadsCount}/{totalLeadsCount} App</span></button>
+                <button onClick={() => setUserTab('buyers')} className={`flex-1 py-2 text-[11px] font-black uppercase tracking-widest rounded-[10px] transition-all flex justify-center items-center gap-1.5 ${userTab === 'buyers' ? 'bg-white text-purple-700 shadow-sm border border-gray-200' : 'text-gray-400 hover:text-gray-600'}`}>Base<span className="bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded uppercase tracking-wider text-[8px]">{installedLeadsCount}/{totalLeadsCount} App</span></button>
               </div>
 
               <div className="px-3 pb-3 flex flex-col gap-3">
@@ -848,12 +939,12 @@ export default function SellerDashboard() {
                       <UserPlus size={16}/>
                    </button>
                    
-                   <select className="bg-purple-50 text-purple-700 border border-purple-100 text-[10px] font-black uppercase tracking-widest px-3 py-2.5 rounded-[14px] outline-none shrink-0 appearance-none" value={userTab === 'app_users' ? appUserSort : buyerSort} onChange={(e) => userTab === 'app_users' ? setAppUserSort(e.target.value) : setBuyerSort(e.target.value)}>
+                  <select className="bg-purple-50 text-purple-700 border border-purple-100 text-[10px] font-black uppercase tracking-widest px-3 py-2.5 rounded-[14px] outline-none shrink-0 appearance-none" value={userTab === 'app_users' ? appUserSort : buyerSort} onChange={(e) => userTab === 'app_users' ? setAppUserSort(e.target.value) : setBuyerSort(e.target.value)}>
                       <option value="last_seen">Last Seen</option>
                       <option value="order">Last Order</option>
                       <option value="cart">Last Cart</option>
-                      {/* 🌟 NAYA: Followup Sorting Option (Sirf Buyers tab ke liye) */}
-                      {userTab === 'buyers' && <option value="followup">Next Follow-up</option>}
+                      {/* 🌟 FIX: Condition hata di, ab dono tab mein Follow-up sort dikhega */}
+                      <option value="followup">Next Follow-up</option>
                    </select>
                    
                    {userTab === 'buyers' && (
@@ -872,24 +963,39 @@ export default function SellerDashboard() {
                 /* --- APP USERS LIST --- */
                 processedAppUsers.length === 0 ? ( <div className="text-center py-20 text-gray-400 font-medium text-sm bg-white rounded-2xl border border-gray-200 shadow-sm mx-1 flex flex-col items-center"><Users size={40} className="mb-2 opacity-20"/><p>No users found.</p></div> ) : (
                 <>
-                {processedAppUsers.map((u, index) => (
+                {processedAppUsers.map((u, index) => {
+                  // 🌟 FIX: Ab notes directly naye 'logs' column se aayenge
+                  const userLogs = Array.isArray(u.logs) ? u.logs : safeParseJSON(u.logs, []);
+                  // Sirf notes wale logs nikal rahe hain
+                  const userNotes = userLogs.filter((l: any) => l.type === 'note' || l.text);
+                  const lastNote = userNotes.length > 0 ? userNotes[userNotes.length - 1] : null;
+
+                  return (
                   <div key={u.id || index} className="bg-white rounded-2xl p-4 border border-gray-200 shadow-sm transition-transform">
+                    {/* 🌟 FIX: Top Header exactly as per Screenshot with inline Password CTA */}
                     <div className="flex justify-between items-start mb-4">
-                      <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-2">
                         <div className="w-10 h-10 bg-blue-100 text-blue-700 font-black rounded-full flex items-center justify-center text-lg uppercase shrink-0">{u.name ? u.name.charAt(0) : 'U'}</div>
                         <div>
-                          <h3 className="font-black text-gray-900 text-[15px]">{u.name} <span className="text-[10px] text-green-600 bg-green-50 px-1.5 py-0.5 rounded ml-1">-{u.discount_percent || 0}%</span></h3>
-                          <p className="text-[10px] font-bold text-gray-500 mt-0.5"><MapPin size={10} className="inline mr-0.5 mb-0.5"/> {u.city || 'N/A'}, {u.state || 'N/A'}</p>
-                          {isAdmin && u.password && (
-                            <div onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(u.password); showToast("Password Copied! 🔐"); }} className="flex items-center gap-2 mt-2 bg-red-50/60 px-2 py-1.5 rounded-md border border-red-100 cursor-pointer w-fit">
-                              <Lock size={10} className="text-red-500" /><span className="text-[10px] font-bold text-gray-600">Pass: <span className="font-mono text-red-700">{u.password}</span></span><Copy size={12} className="text-red-400 ml-1" />
-                            </div>
-                          )}
+                          <h3 className="font-black text-gray-900 text-[15px] flex items-center gap-1">
+                             <span className="truncate max-w-[110px]">{u.name}</span>
+                             <span className="text-[10px] text-green-600 bg-[#E5F7ED] px-1.5 py-0.5 rounded ml-0.5">-{u.discount_percent || 0}%</span>
+                          </h3>
+                          <p className="text-[10px] font-bold text-gray-500 mt-0.5 flex items-center gap-0.5"><MapPin size={10} className="shrink-0"/> <span className="truncate max-w-[130px]">{u.city || 'N/A'}, {u.state || 'N/A'}</span></p>
                         </div>
                       </div>
-                      <div className="flex gap-2">
-                        <a href={`tel:+91${u.phone}`} className="w-8 h-8 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center active:scale-95 transition-transform"><Phone size={14}/></a>
-                        <a href={getWhatsAppLink(`91${u.phone}`)} target="_blank" rel="noreferrer" className="w-8 h-8 rounded-lg bg-green-50 text-green-600 flex items-center justify-center active:scale-95 transition-transform"><MessageCircle size={14}/></a>
+                      
+                      {/* Right Side Actions */}
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {isAdmin && u.password && (
+                           <div onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(u.password); showToast("Password Copied! 🔐"); }} className="flex items-center gap-1.5 bg-[#FFF0F0] px-2 py-1.5 rounded-lg border border-[#FFE4EB] cursor-pointer active:scale-95 transition-transform h-8">
+                              <Lock size={12} className="text-[#FF3F6C]" />
+                              <span className="text-[10px] font-bold text-gray-700"></span>
+                              <Copy size={12} className="text-[#FF3F6C]" />
+                           </div>
+                        )}
+                        <a href={`tel:+91${u.phone}`} className="w-8 h-8 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center active:scale-95 transition-transform shrink-0"><Phone size={14}/></a>
+                        <a href={getWhatsAppLink(`91${u.phone}`)} target="_blank" rel="noreferrer" className="w-8 h-8 rounded-lg bg-[#E5F7ED] text-[#008A00] flex items-center justify-center active:scale-95 transition-transform shrink-0"><MessageCircle size={14}/></a>
                       </div>
                     </div>
                     <div className="grid grid-cols-3 gap-2 bg-gray-50 p-2 rounded-lg text-center mb-3">
@@ -901,13 +1007,31 @@ export default function SellerDashboard() {
                        </div>
                        <div className="bg-white border border-gray-200 rounded py-2 shadow-sm"><p className="text-sm font-black text-gray-900">{u.cartUnique}</p><p className="text-[9px] font-bold text-gray-500 uppercase tracking-widest mt-0.5">Unique Items</p></div>
                     </div>
+
+                    {/* 🌟 NAYA: Followup Notes Row exact jaisa design manga tha */}
+                    <div className="flex items-center justify-between mb-3">
+                       <div className="flex items-center gap-2 overflow-hidden flex-1">
+                          <span className="text-[10px] font-bold text-gray-400 shrink-0 uppercase tracking-widest">{lastNote ? safeFormatDate(lastNote.date).split(',')[0] : 'NO NOTES'} <span className="text-gray-300 ml-1">•</span></span>
+                          {lastNote ? (
+                             <span className="text-[11px] font-semibold text-gray-800 italic truncate bg-orange-50 px-2 py-0.5 rounded-md border border-orange-100">"{lastNote.text}"</span>
+                          ) : (
+                             <span className="text-[11px] font-semibold text-gray-400 italic bg-gray-50 px-2 py-0.5 rounded-md">No notes added</span>
+                          )}
+                       </div>
+                       <div className="flex items-center gap-2.5 shrink-0 ml-2">
+                          {/* 🌟 FIX: Tag ab lastNote se read hoga */}
+<button onClick={() => { setSelectedBuyerForNote({...u, isAppUser: true}); setNoteForm({ text: '', nextDate: '', tag: lastNote?.tag || 'Potential' }); setIsNoteSheetOpen(true); }} className="text-[12px] font-black text-blue-600 hover:underline">+Add</button>
+                          <button onClick={() => { setViewingNotesUser({...u, isAppUser: true, notes: userNotes}); setIsViewNotesOpen(true); }} className="text-[12px] font-black text-blue-600 hover:underline">View</button>
+                       </div>
+                    </div>
+
                     <div className="grid grid-cols-3 gap-2 pt-3 border-t border-gray-100">
                        <div className="flex flex-col text-center"><span className="text-[8px] font-bold text-gray-400 uppercase tracking-tighter">Last Seen</span><span className="text-[10px] font-bold text-gray-700 leading-tight mt-0.5">{safeFormatDate(u.lastSeen)}</span></div>
                        <div className="flex flex-col text-center border-x border-gray-100"><span className="text-[8px] font-bold text-gray-400 uppercase tracking-tighter">Last Cart</span><span className="text-[10px] font-bold text-gray-700 leading-tight mt-0.5">{safeFormatDate(u.lastCart)}</span></div>
                        <div className="flex flex-col text-center"><span className="text-[8px] font-bold text-gray-400 uppercase tracking-tighter">Last Order</span><span className="text-[10px] font-bold text-gray-700 leading-tight mt-0.5">{safeFormatDate(u.lastOrder)}</span></div>
                     </div>
                   </div>
-                ))}
+                )})}
                 {filteredUsers.length > visibleUsersCount && (
                   <button onClick={() => setVisibleUsersCount(prev => prev + 20)} className="w-full py-4 bg-white border border-gray-200 text-blue-600 font-bold text-sm rounded-xl shadow-sm active:scale-95">Load More Users</button>
                 )}
@@ -1509,22 +1633,35 @@ export default function SellerDashboard() {
                    if (!noteForm.text) return showToast("Please write a note!");
                    setIsSavingNote(true);
                    try {
-                     // 🌟 FIX: Note ke andar tag save hoga
-                     const newNote = { date: getLocalTimestamp(), text: noteForm.text, nextDate: noteForm.nextDate, tag: noteForm.tag };
-                     const updatedNotes = [...(selectedBuyerForNote.notes || []), newNote];
+                     // 🌟 FIRST TAB (APP USERS): Naya 'logs' column system
+                     if (selectedBuyerForNote.isAppUser) {
+                         const newLog = { type: 'note', date: getLocalTimestamp(), text: noteForm.text, nextDate: noteForm.nextDate, tag: noteForm.tag };
+                         
+                         const currentLogs = Array.isArray(selectedBuyerForNote.logs) ? selectedBuyerForNote.logs : safeParseJSON(selectedBuyerForNote.logs, []);
+                         const updatedLogs = [...currentLogs, newLog];
+                         
+                         // 'users' table mein naye logs column mein save hoga
+                         const { error } = await supabase.from('users').update({ logs: updatedLogs }).eq('id', selectedBuyerForNote.id);
+                         if(error) throw error;
+                         
+                         setUsersList(prev => prev.map(u => u.id === selectedBuyerForNote.id ? { ...u, logs: updatedLogs, latestCrmTag: noteForm.tag } : u));
+                     } 
+                     // 🌟 SECOND TAB (BASE LEADS): Purana logic, isko bilkul nahi chheda!
+                     else {
+                         const newNote = { date: getLocalTimestamp(), text: noteForm.text, nextDate: noteForm.nextDate, tag: noteForm.tag };
+                         
+                         const updatedNotes = [...(selectedBuyerForNote.followupNotes || selectedBuyerForNote.notes || []), newNote];
+                         
+                         const { error } = await supabase.from('user_base').update({ followupNotes: updatedNotes, tag: selectedBuyerForNote.sysTag }).eq('phone', selectedBuyerForNote.phone);
+                         if(error) throw error;
+                         
+                         setBuyersList(prev => prev.map(b => String(b.phone) === String(selectedBuyerForNote.phone) ? { ...b, followupNotes: updatedNotes, notes: updatedNotes, latestCrmTag: noteForm.tag } : b));
+                     }
                      
-                     // 🌟 FIX: Raw array bhej rahe hain taaki DB JSONB error na de. Aur main DB 'tag' column mein System Tag bhej rahe hain.
-                     const { error } = await supabase.from('user_base')
-                          .update({ followupnotes: updatedNotes, tag: selectedBuyerForNote.sysTag })
-                          .eq('phone', selectedBuyerForNote.phone);
-                     
-                     if(error) throw error;
-                     
-                     // Local state update
-                     setBuyersList(prev => prev.map(b => String(b.phone) === String(selectedBuyerForNote.phone) ? { ...b, followupnotes: updatedNotes, notes: updatedNotes, latestCrmTag: noteForm.tag } : b));
-                     setIsNoteSheetOpen(false); showToast("Note Added! ✅");
+                     setIsNoteSheetOpen(false); 
+                     showToast("Note Added! ✅");
                    } catch(e:any) { alert("Error: " + e.message); } finally { setIsSavingNote(false); }
-                }} 
+                }}
                 disabled={isSavingNote}
                 className="w-full mt-2 bg-purple-600 text-white py-4 rounded-xl font-black uppercase tracking-widest text-xs shadow-md active:scale-95 flex justify-center items-center gap-2"
               >

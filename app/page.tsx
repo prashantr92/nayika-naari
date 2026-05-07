@@ -634,11 +634,31 @@ const processTruckUpdate = (baseProduct: any) => {
     async function getProducts() {
       if (view === 'plp' && products.length === 0) {
         setLoading(true);
-        const { data } = await supabase.from('products').select('id, name, subcategory, cost, mrp, discount, description, meta, img, seller, createdAt').order('id', { ascending: false });
+
+        // 🌟 NAYA: Session Storage Caching
+        const cachedProducts = sessionStorage.getItem('nayika_naari_products');
+        const cacheTime = sessionStorage.getItem('nayika_naari_products_time');
+        const isCacheValid = cachedProducts && cacheTime && (Date.now() - Number(cacheTime) < 3600000); // 1 Hour cache
+
+        let finalData: any[] = [];
+
+        if (isCacheValid) {
+           finalData = JSON.parse(cachedProducts); 
+        } else {
+           const { data } = await supabase.from('products')
+              .select('id, name, subcategory, cost, mrp, discount, description, meta, img, seller, createdAt')
+              .order('id', { ascending: false });
+           
+           if (data) {
+              finalData = data;
+              sessionStorage.setItem('nayika_naari_products', JSON.stringify(data));
+              sessionStorage.setItem('nayika_naari_products_time', Date.now().toString());
+           }
+        }
         
-        if (data && data.length > 0) {
-           // 1. Data ko random shuffle karo
-           let randomizedData = shuffleArray([...data]);
+        if (finalData.length > 0) {
+           // 1. Data ko random shuffle karo (Sirf finalData use hoga)
+           let randomizedData = shuffleArray([...finalData]);
 
            // 2. Active/Inactive/Partial Check karke Out-of-Stock wale items ko end mein bhej do
            randomizedData.sort((a, b) => {
@@ -648,16 +668,14 @@ const processTruckUpdate = (baseProduct: any) => {
                   if (keys.length === 0) return 0; // Inactive
                   const activeCount = keys.filter(k => sizes[k].is_active !== false).length;
                   return activeCount === keys.length ? 2 : activeCount === 0 ? 0 : 1; 
-                  // 2 = Active, 1 = Partial, 0 = Inactive
                };
                
                const statusA = getStatus(a);
                const statusB = getStatus(b);
                
-               // Inactive items ko neeche push karo
                if (statusA > statusB) return -1;
                if (statusA < statusB) return 1;
-               return 0; // Agar same status hai, toh Random order hi rakho
+               return 0; 
            });
 
            setProducts(randomizedData);
@@ -738,10 +756,10 @@ const processTruckUpdate = (baseProduct: any) => {
   const fetchMyOrders = async () => {
     setLoading(true);
     
-    // 🌟 FIX: Orders & Order Details mein se extra columns (latitude, longitude, bill etc) exclude kar diye
+    // 🌟 FIX: Address aur city columns wapas add kiye taaki order details mein show ho sakein
     const { data: ordersData, error: ordersError } = await supabase
       .from('orders')
-      .select('id, userid, amount, finalAmount, status, box, pcs, advance, meta, tracking, createdAt')
+      .select('id, userid, amount, finalAmount, status, box, pcs, advance, meta, tracking, createdAt, address, city, state, pincode, phone')
       .eq('userid', currentUser.id)
       .order('createdAt', { ascending: false });
 
