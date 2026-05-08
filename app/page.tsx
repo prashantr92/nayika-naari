@@ -11,6 +11,8 @@ import {
   ClipboardList, Navigation, AlertCircle, Ban, Package, Download,
   Bell, Smartphone, Share2
 } from 'lucide-react';
+
+
 import Image from 'next/image'; // 🌟 NAYA: Image Optimization ke liye
 
 const safeParseJSON = (data: any, fallback: any) => {
@@ -46,6 +48,31 @@ const theme = {
   offer: '#FF905A'
 };
 
+const getOptimizedImgUrl = (originalUrl, viewType = 'plp') => {
+  if (!originalUrl || typeof originalUrl !== 'string') return '';
+  
+  // Ab hum spelling match hi nahi karenge, seedha '/public/' se URL kaat denge
+  if (originalUrl.includes("supabase.co") && originalUrl.includes("/public/")) {
+    const parts = originalUrl.split('/public/');
+    
+    if (parts.length === 2) {
+      const imagePath = parts[1]; // Ye tumhari photo ka aakhri path nikal lega
+      const IMAGEKIT_BASE = "https://ik.imagekit.io/3zqv3f5kj/";
+      const newUrl = IMAGEKIT_BASE + imagePath;
+      
+      // Size aur Quality Control
+      if (viewType === 'plp') {
+         return `${newUrl}?tr=w-300,q-70`;
+      } else if (viewType === 'pdp') {
+         return `${newUrl}?tr=w-800,q-80`;
+      }
+      return newUrl; 
+    }
+  }
+  
+  return originalUrl;
+};
+
 // 🌟 NAYA: Memoized Product Card (App Hang Hone Se Bachayega)
 const ProductCard = memo(({ p, openPDP }: { p: any, openPDP: (p: any) => void }) => {
   const imgData = safeParseJSON(p.img, { images: [] });
@@ -56,7 +83,7 @@ const ProductCard = memo(({ p, openPDP }: { p: any, openPDP: (p: any) => void })
   return (
     <div onClick={() => openPDP(p)} className="bg-white flex flex-col cursor-pointer hover:bg-gray-50 transition-colors pb-3 relative">
       <div className="relative w-full aspect-[4/5] bg-gray-50 flex items-center justify-center overflow-hidden">
-        {imgData.images[0] && <Image src={imgData.images[0]} alt={p.name || 'Product'} fill sizes="(max-width: 768px) 50vw, 33vw" className="object-cover rounded-md p-1 mix-blend-multiply" />}
+      {imgData.images[0] && <Image src={getOptimizedImgUrl(imgData.images[0], 'plp')} alt={p.name || 'Product'} fill sizes="(max-width: 768px) 50vw, 33vw" className="object-cover rounded-md p-1 mix-blend-multiply" />}
         <div className="absolute bottom-1 left-1 bg-[#C8F7F4] text-[#006B65] text-[9px] font-bold px-1.5 py-0.5 rounded shadow-sm">
           MOQ: {boxSize} Pcs
         </div>
@@ -111,47 +138,41 @@ export default function NayikaNaariApp() {
   const [currentImgIndex, setCurrentImgIndex] = useState(0);
   const [isAdding, setIsAdding] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
-
-  // 🌟 NAYA: Native Share Logic
-  const handleShareProduct = async (product: any, boxSize: number) => {
+const handleShareProduct = async (product: any, boxSize: number) => {
     setIsSharing(true);
     try {
-      const imgUrls = safeParseJSON(product.img, {images:[]}).images;
-      const mainImageUrl = imgUrls[0];
+      const meta = safeParseJSON(product.meta, {});
       
-      // Formatting description as bullet points
-      let descText = "";
-      if (product.description) {
-         const descLines = product.description.split(/\\n|\n/).filter((l: string) => l.trim() !== "");
-         descLines.forEach((line: string) => { descText += `• ${line.trim()}\n`; });
-      }
+      // 1. 🌟 Active Sizes nikalna
+      const sizesRaw = meta?.attributes?.available_sizes || {};
+      const activeSizes = Array.isArray(sizesRaw) 
+         ? sizesRaw 
+         : Object.keys(sizesRaw).filter(s => sizesRaw[s]?.is_active !== false);
+         
+      // 2. 🌟 Available Colors nikalna (Agar tumne DB me save kiye hain)
+      const colorsRaw = meta?.attributes?.available_colors || [];
 
-      // Final WhatsApp text structure
-      const shareText = `*${product.name.toUpperCase()}*\n\n📦 *MOQ Box:* ${boxSize} Pcs\n\n*Details:*\n${descText}\n💰 *Rate:*  /pc!`;
+      // 3. 🌟 Formatting with Emojis
+      const sizesText = activeSizes.length > 0 ? `\n📏 *Sizes:* ${activeSizes.join(', ')}` : '';
+      const colorsText = colorsRaw.length > 0 ? `\n🎨 *Colors:* ${colorsRaw.join(', ')}` : '';
+      const descText = product.description ? `\n\n📝 *Details:*\n${product.description}` : '';
 
+      // 4. 🌟 Final Message Ready
+      const shareText = `*${product.name}*\n📦 MOQ: ${boxSize} Pcs Box\n💰 Rate: ₹${product.cost} (MRP: ₹${product.mrp})${sizesText}${colorsText}${descText}\n\n👉 View on App:\n${window.location.origin}/?view=pdp&id=${product.id}`;
+
+      // Phone ki native share screen kholne ke liye
       if (navigator.share) {
-         try {
-            // Downloading the image in background to share as a real file
-            const response = await fetch(mainImageUrl);
-            const blob = await response.blob();
-            const ext = mainImageUrl.split('.').pop()?.split('?')[0] || 'jpg';
-            const file = new File([blob], `product_${product.id}.${ext}`, { type: blob.type });
-
-            if (navigator.canShare && navigator.canShare({ files: [file] })) {
-               await navigator.share({ title: product.name, text: shareText, files: [file] });
-            } else {
-               await navigator.share({ title: product.name, text: shareText }); // Fallback
-            }
-         } catch (imgErr) {
-            await navigator.share({ title: product.name, text: shareText }); // Fallback if image fails
-         }
+        await navigator.share({
+          title: product.name,
+          text: shareText,
+        });
       } else {
-         navigator.clipboard.writeText(shareText);
-         showToast("Details copied! Share manually.");
+        // Agar PC/Laptop par hain, toh seedha WhatsApp web khulega
+        const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(shareText)}`;
+        window.open(whatsappUrl, '_blank');
       }
     } catch (error) {
-      console.error("Error sharing:", error);
-      showToast("Failed to share.");
+      console.log("Share failed:", error);
     } finally {
       setIsSharing(false);
     }
@@ -647,6 +668,7 @@ const processTruckUpdate = (baseProduct: any) => {
         } else {
            const { data } = await supabase.from('products')
               .select('id, name, subcategory, cost, mrp, discount, description, meta, img, seller, createdAt')
+              .eq('status', 1)
               .order('id', { ascending: false });
            
            if (data) {
@@ -1687,9 +1709,10 @@ if (view === 'splash') return (
           const metaData = safeParseJSON(selectedProduct.meta, {});
           const sizesRaw = metaData?.attributes?.available_sizes || {};
           
+          // 🌟 FIX 1: Yahan se `.filter` hata diya taaki inactive sizes bhi UI mein aayein
           const sizes = Array.isArray(sizesRaw) 
              ? sizesRaw 
-             : Object.keys(sizesRaw).filter(s => sizesRaw[s].is_active !== false);
+             : Object.keys(sizesRaw); 
 
           const getExtraPrice = (s: string) => Array.isArray(sizesRaw) ? 0 : (sizesRaw[s]?.extra_price || 0);
           const boxSize = metaData?.attributes?.box_size?.[0] || 6;
@@ -1711,9 +1734,9 @@ if (view === 'splash') return (
                  <div className="flex overflow-x-auto snap-x snap-mandatory scrollbar-hide" onScroll={e => setCurrentImgIndex(Math.round(e.currentTarget.scrollLeft / e.currentTarget.clientWidth))}>
                    {imgData.images.map((img: string, idx: number) => (
                      // 🌟 FIX: 'relative' add kiya aur priority true for first image
-                     <div key={idx} onClick={() => setZoomOverlay({images: imgData.images, currentIndex: idx})} className="relative snap-center shrink-0 w-full h-[250px] flex items-center justify-center cursor-zoom-in bg-white p-2">
-                       {img && <Image src={img} alt="Product" fill sizes="100vw" priority={idx === 0} className="object-contain drop-shadow-sm mix-blend-multiply p-3" />}
-                     </div>
+                    <div key={idx} onClick={() => setZoomOverlay({images: imgData.images.map((i: string) => getOptimizedImgUrl(i, 'pdp')), currentIndex: idx})} className="relative snap-center shrink-0 w-full h-[250px] flex items-center justify-center cursor-zoom-in bg-white p-2">
+  {img && <Image src={getOptimizedImgUrl(img, 'pdp')} alt="Product" fill sizes="100vw" priority={idx === 0} className="object-contain drop-shadow-sm mix-blend-multiply p-3" />}
+</div>
                    ))}
                  </div>
               </div>
@@ -1763,23 +1786,38 @@ if (view === 'splash') return (
                 <div>
                   <div className="px-4 pt-4 pb-2"><h3 className="text-xs font-bold text-gray-900 uppercase tracking-widest">Select Sizes</h3></div>
                   {sizes.length === 0 && <p className="p-4 text-center text-gray-400 text-xs font-medium">No sizes available right now.</p>}
+                  
                   {sizes.map((size: string, index: number) => {
+                    // 🌟 FIX 2: Check active status for each size
+                    const isActive = Array.isArray(sizesRaw) ? true : (sizesRaw[size]?.is_active !== false);
+                    
                     const extraPrice = getExtraPrice(size);
                     const qtyPieces = sizeQuantities[size] || 0;
-                    const isSelected = qtyPieces > 0;
+                    const isSelected = qtyPieces > 0 && isActive; // Inactive can't be selected
+                    
                     return (
-                      <div key={size} className={`flex justify-between items-center py-3 px-4 mx-4 mb-2 rounded-xl border ${isSelected ? 'bg-[#FFE4EB]/30' : 'border-gray-200 bg-white'}`} style={isSelected ? {borderColor: theme.primary} : {}}>
+                      <div key={size} className={`flex justify-between items-center py-3 px-4 mx-4 mb-2 rounded-xl border ${!isActive ? 'opacity-70 bg-gray-50 border-gray-100' : (isSelected ? 'bg-[#FFE4EB]/30' : 'border-gray-200 bg-white')}`} style={isSelected && isActive ? {borderColor: theme.primary} : {}}>
                         <div className="flex flex-col">
                           <div className="flex items-center gap-2">
-                             <p className="font-black text-[16px] leading-tight" style={isSelected ? {color: theme.primary} : {color: '#111827'}}>{size}</p>
-                             
+                              <p className="font-black text-[16px] leading-tight" style={isSelected && isActive ? {color: theme.primary} : {color: '#111827'}}>{size}</p>
                           </div>
                           <p className="text-[10px] text-gray-500 font-medium mt-0.5">{boxSize} Pcs Box {extraPrice > 0 && <span className="text-[12px] bg-orange text-gray-600 px-1.5 py-0.5 rounded font-bold border border-gray-200">+₹{extraPrice} Extra Price Per Pc </span>}</p>
                         </div>
+                        
                         <div className="flex items-center gap-3">
-                          <button onClick={() => updateQty(size, -1, boxSize)} className={`w-8 h-8 rounded-full border flex items-center justify-center font-black active:scale-95 transition-all text-lg leading-none ${isSelected ? 'bg-white' : 'border-gray-200 text-gray-400'}`} style={isSelected ? {borderColor: theme.primary, color: theme.primary} : {}}>-</button>
-                          <span className="w-5 text-center font-bold text-gray-900 text-[15px]">{qtyPieces}</span>
-                          <button onClick={() => updateQty(size, 1, boxSize)} className={`w-8 h-8 rounded-full border flex items-center justify-center font-black active:scale-95 transition-all text-lg leading-none ${isSelected ? 'text-white' : 'border-gray-200 text-gray-400'}`} style={isSelected ? {backgroundColor: theme.primary, borderColor: theme.primary} : {}}>+</button>
+                          {isActive ? (
+                              // 🟢 IN-STOCK (Original Buttons)
+                              <>
+                                <button onClick={() => updateQty(size, -1, boxSize)} className={`w-8 h-8 rounded-full border flex items-center justify-center font-black active:scale-95 transition-all text-lg leading-none ${isSelected ? 'bg-white' : 'border-gray-200 text-gray-400'}`} style={isSelected ? {borderColor: theme.primary, color: theme.primary} : {}}>-</button>
+                                <span className="w-5 text-center font-bold text-gray-900 text-[15px]">{qtyPieces}</span>
+                                <button onClick={() => updateQty(size, 1, boxSize)} className={`w-8 h-8 rounded-full border flex items-center justify-center font-black active:scale-95 transition-all text-lg leading-none ${isSelected ? 'text-white' : 'border-gray-200 text-gray-400'}`} style={isSelected ? {backgroundColor: theme.primary, borderColor: theme.primary} : {}}>+</button>
+                              </>
+                          ) : (
+                              // 🔴 OUT-OF-STOCK (Coming Soon Tag)
+                              <span className="text-[10px] font-black text-orange-500 bg-orange-50 px-3 py-1.5 rounded-md border border-orange-100 uppercase tracking-widest flex items-center gap-1">
+                                 ⏳ Coming Soon
+                              </span>
+                          )}
                         </div>
                       </div>
                     );

@@ -1,0 +1,8 @@
+[{
+      "relation": ["delegate_permission/common.handle_all_urls"],
+      "target": {
+        "namespace": "android_app",
+        "package_name": "app.vercel.nayikanaari.twa",
+        "sha256_cert_fingerprints": ["B4:08:C7:CA:C8:96:28:10:33:16:00:C0:76:F1:C8:22:EA:14:DA:B1:CB:5D:D4:50:2C:5C:97:67:CC:6F:88:D4"]
+      }
+    }]

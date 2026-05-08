@@ -1,9 +1,10 @@
 {
   "name": "Nayika Naari",
-  "short_name": "Naari",
-  "description": "Wholesale Made Easy",
+  "short_name": "Nayika Naari",
+  "description": "Your ultimate B2B wholesale destination for all women's essentials—from innerwear and apparel to bags and cosmetics, guaranteed at unbeatable factory prices.",
   "start_url": "/",
   "display": "standalone",
+  "scope": "/",
   "background_color": "#ffffff",
   "theme_color": "#FF3F6C",
   "orientation": "portrait",

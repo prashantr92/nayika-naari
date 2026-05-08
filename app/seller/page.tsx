@@ -304,6 +304,42 @@ export default function SellerDashboard() {
     setLoading(false);
   };
 
+const handleProductToggle = async (product: any) => {
+    const currentStatus = product.status === undefined ? 1 : product.status;
+    const newStatus = currentStatus === 1 ? 0 : 1;
+    
+    let updatedMeta = safeParseJSON(product.meta, {});
+    
+    if (newStatus === 0 && updatedMeta?.attributes?.available_sizes) {
+      Object.keys(updatedMeta.attributes.available_sizes).forEach(size => {
+        updatedMeta.attributes.available_sizes[size].is_active = false;
+      });
+    } else if (newStatus === 1 && updatedMeta?.attributes?.available_sizes) {
+      // Wapas ON karne par sizes bhi active hone chahiye
+      Object.keys(updatedMeta.attributes.available_sizes).forEach(size => {
+        updatedMeta.attributes.available_sizes[size].is_active = true;
+      });
+    }
+
+    // 🌟 FIX 1: setMyProducts use kiya hai
+    setMyProducts(prev => prev.map(p => 
+      p.id === product.id ? { ...p, status: newStatus, meta: updatedMeta } : p
+    ));
+
+    try {
+      const { error } = await supabase
+        .from('products')
+        // 🌟 FIX 2: JSON.stringify add kiya taaki DB error na de
+        .update({ status: newStatus, meta: JSON.stringify(updatedMeta) }) 
+        .eq('id', product.id);
+      
+      if (error) throw error;
+      showToast(newStatus === 1 ? "Product Live! ✅" : "Product Hidden! 🚫");
+    } catch (error) {
+      console.error("Toggle failed", error);
+      showToast("Failed to update status!");
+    }
+  };
   const fetchOrders = async () => {
     setLoading(true);
     let orderIdsForSeller = new Set();
@@ -1106,7 +1142,7 @@ export default function SellerDashboard() {
                   <label className="text-[11px] font-bold text-gray-600 uppercase tracking-wider mb-3 block border-b border-gray-200 pb-2">Size Configuration</label>
                   <div className="space-y-3">
                     {Object.keys(sizeConfig).map((size) => (
-                        <div key={size} className="flex items-center justify-between"><div className="font-black text-gray-800 w-12">{size}</div><div className="flex items-center gap-2 flex-1"><span className="text-xs font-bold text-gray-400">+ ₹</span><input type="number" value={sizeConfig[size].extra_price || ''} onChange={(e) => setSizeConfig(prev => ({...prev, [size]: {...prev[size], extra_price: parseInt(e.target.value) || 0}}))} className="w-full max-w-[100px] bg-white border border-gray-200 rounded-lg px-3 py-1.5 text-sm font-bold text-gray-800" /></div><button onClick={() => setSizeConfig(prev => ({...prev, [size]: {...prev[size], is_active: !(sizeConfig[size].is_active !== false)}}))} className="text-gray-500 transition-colors">{(sizeConfig[size].is_active !== false) ? <ToggleRight size={28} className="text-green-500" /> : <ToggleLeft size={28} />}</button></div>
+                        <div key={size} className="flex items-center justify-between"><div className="font-black text-gray-800 w-12">{size}</div><div className="flex items-center gap-2 flex-1"><span className="text-xs font-bold text-gray-400">+ ₹</span><input type="number" value={sizeConfig[size].extra_price || ''} onChange={(e) => setSizeConfig(prev => ({...prev, [size]: {...prev[size], extra_price: parseInt(e.target.value) || 0}}))} className="w-full max-w-[100px] bg-white border border-gray-200 rounded-lg px-3 py-1.5 text-sm font-bold text-gray-800" /></div><button onClick={() => setSizeConfig(prev => ({...prev, [size]: {...prev[size], is_active: !(prev[size].is_active !== false)}}))} className="text-gray-500 transition-colors">{(sizeConfig[size].is_active !== false) ? <ToggleRight size={28} className="text-green-500" /> : <ToggleLeft size={28} />}</button></div>
                     ))}
                   </div>
                 </div>
@@ -1158,9 +1194,26 @@ export default function SellerDashboard() {
                       </div>
                       <div className="flex-1 flex flex-col justify-between py-1 overflow-hidden">
                         <div>
-                          <div className="flex justify-between items-start gap-2"><h3 className="font-bold text-gray-900 text-sm truncate">{p.name}</h3><span className="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase shrink-0 border border-gray-200">{p.subcategory}</span></div>
+                         <div className="flex justify-between items-start gap-2">
+                            <h3 className="font-bold text-gray-900 text-sm truncate flex-1">{p.name}</h3>
+                            <div className="flex flex-col items-end gap-1.5 shrink-0">
+                               <span className="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase border border-gray-200">{p.subcategory}</span>
+                               
+                               {/* 🌟 NAYA: Master Toggle Switch */}
+                               <label className="flex items-center cursor-pointer gap-1.5">
+                                 <span className="text-[8px] font-black text-gray-500 uppercase tracking-widest">
+                                   {(p.status === undefined ? 1 : p.status) === 1 ? 'ON' : 'OFF'}
+                                 </span>
+                                 <div className="relative">
+                                   <input type="checkbox" className="sr-only" checked={(p.status === undefined ? 1 : p.status) === 1} onChange={() => handleProductToggle(p)} />
+                                   <div className={`block w-7 h-4 rounded-full transition-colors ${(p.status === undefined ? 1 : p.status) === 1 ? 'bg-green-500' : 'bg-gray-300'}`}></div>
+                                   <div className={`absolute left-[2px] top-[2px] bg-white w-3 h-3 rounded-full transition-transform ${(p.status === undefined ? 1 : p.status) === 1 ? 'translate-x-3' : 'translate-x-0'}`}></div>
+                                 </div>
+                               </label>
+                            </div>
+                          </div>
                           <div className="flex items-center gap-1.5 mt-1"><p className="font-black text-gray-900 text-base">₹{p.cost}</p><p className="text-[10px] text-gray-400 line-through font-bold">₹{p.mrp}</p></div>
-                        </div>
+                        </div> {/* 🌟 YE WALA DIV MISSING THA */}
                         <div className="flex flex-wrap items-center gap-2 mt-2 pt-2 border-t border-gray-50">
                           <button onClick={() => startEditProduct(p)} className="flex items-center gap-1 text-[10px] font-bold text-gray-600 bg-gray-50 px-2 py-1.5 rounded-md"><Edit2 size={12} /> Edit</button>
                           <button onClick={() => startCopyProduct(p)} className="flex items-center gap-1 text-[10px] font-bold text-gray-600 bg-gray-50 px-2 py-1.5 rounded-md"><Copy size={12} /> Copy</button>
@@ -2400,9 +2453,9 @@ export default function SellerDashboard() {
                              <span className="text-xs font-bold text-gray-400">+ ₹</span>
                              <input type="number" value={editingSizeConfig[size].extra_price || ''} onChange={(e) => setEditingSizeConfig(prev => ({...prev, [size]: {...prev[size], extra_price: parseInt(e.target.value) || 0}}))} className="w-full max-w-[100px] bg-white border border-gray-300 rounded-lg px-3 py-1.5 text-sm font-bold text-gray-800 outline-none focus:border-blue-500" />
                            </div>
-                           <button onClick={() => setEditingSizeConfig(prev => ({...prev, [size]: {...prev[size], is_active: !(editingSizeConfig[size].is_active !== false)}}))} className="text-gray-500 transition-colors">
-                             {(editingSizeConfig[size].is_active !== false) ? <ToggleRight size={28} className="text-green-500" /> : <ToggleLeft size={28} />}
-                           </button>
+                           <button onClick={() => setEditingSizeConfig(prev => ({...prev, [size]: {...prev[size], is_active: !(prev[size].is_active !== false)}}))} className="text-gray-500 transition-colors">
+  {(editingSizeConfig[size].is_active !== false) ? <ToggleRight size={28} className="text-green-500" /> : <ToggleLeft size={28} />}
+</button>
                         </div>
                     ))}
                   </div>
