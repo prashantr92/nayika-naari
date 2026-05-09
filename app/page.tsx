@@ -15,6 +15,33 @@ import {
 
 import Image from 'next/image'; // 🌟 NAYA: Image Optimization ke liye
 
+// 🌟 Razorpay Script Loader — handles already-loaded case (bfcache fix)
+const loadRazorpayScript = (): Promise<boolean> => {
+  return new Promise((resolve) => {
+    // ✅ FIX: Agar Razorpay pehle se loaded hai, turant true return karo
+    // (bfcache ya second attempt pe script dobara load nahi hoti)
+    if (typeof (window as any).Razorpay !== 'undefined') {
+      resolve(true);
+      return;
+    }
+    // Agar script tag DOM mein hai but Razorpay object abhi nahi bana
+    const existing = document.querySelector('script[src*="razorpay"]');
+    if (existing) {
+      // Thodi der wait karo fir check karo
+      setTimeout(() => {
+        resolve(typeof (window as any).Razorpay !== 'undefined');
+      }, 800);
+      return;
+    }
+    // Fresh load
+    const script = document.createElement('script');
+    script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+    script.onload = () => resolve(true);
+    script.onerror = () => resolve(false);
+    document.body.appendChild(script);
+  });
+};
+
 const safeParseJSON = (data: any, fallback: any) => {
   if (!data) return fallback;
   if (typeof data === 'object') return data;
@@ -432,6 +459,26 @@ const handleShareProduct = async (product: any, boxSize: number) => {
     return () => window.removeEventListener('popstate', handleBackButton);
   }, [view, activeSheet, zoomOverlay, isSellerSheetOpen]);
 
+  // 🌟 NAYA: BFCache Safari/Edge Fix 
+  // Jab user WhatsApp se "Back" dabata hai, ye script trigger hoti hai aur faste hue Truck ko kill karti hai
+  useEffect(() => {
+    const handlePageShow = (event: any) => {
+      if (event.persisted) {
+        // Agar page memory se freeze hoke wapas load hua hai
+        setIsPlacingOrder(false);
+        setOrderProgress(0);
+        
+        // Cart bhi DB se sync kar lo taaki fresh state ho
+        if (currentUser) {
+           loadDBCart(currentUser.id);
+        }
+      }
+    };
+    
+    window.addEventListener('pageshow', handlePageShow);
+    return () => window.removeEventListener('pageshow', handlePageShow);
+  }, [currentUser]);
+
   const showToast = (msg: string) => {
     setToastMsg(msg);
     setTimeout(() => setToastMsg(''), 2500);
@@ -828,6 +875,75 @@ const openOrderDetails = async (order: any) => {
     setLoading(false);
   };
 
+  // 🌟 NAYA: Purane Pending Orders ki Payment Handle Karne Ke Liye
+  const handlePendingPayment = async (order: any) => {
+    const isScriptLoaded = await loadRazorpayScript();
+    if (!isScriptLoaded) {
+      alert("Razorpay SDK failed to load. Are you online?");
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/razorpay', { 
+         method: 'POST',
+         cache: 'no-store', 
+         headers: { 'Pragma': 'no-cache', 'Cache-Control': 'no-cache, no-store, must-revalidate' }
+      });
+      const data = await response.json();
+      
+      if (!data.success) {
+         alert("Failed to initiate payment.");
+         return;
+      }
+
+      const options = {
+        key: "rzp_live_Sm6dnONggYc7iv", // Tumhari Asli Live Key
+        amount: data.order.amount,
+        currency: data.order.currency,
+        name: "Nayika Naari",
+        description: `Advance Payment for Order #${order.id}`,
+        order_id: data.order.id, 
+        handler: async function (response: any) {
+          const { error } = await supabase.from('orders')
+            .update({ 
+               status: 'Confirmed', 
+               advance: 0, 
+               rzp_payment_id: response.razorpay_payment_id // 🌟 NAYA: Yahan bhi ID save karo
+            })
+            .eq('id', order.id);
+
+          if (error) {
+             alert("Payment received but status update failed. Please contact support.");
+          } else {
+             showToast("Payment Successful! Order Confirmed.");
+             fetchMyOrders(); // 🌟 Ye turant tumhari order list ko refresh kar dega
+             
+             // Admin ko Push Notification (Optional)
+             const { data: adminUser } = await supabase.from('users').select('push_token').eq('phone', 9758008624).single();
+             if (adminUser?.push_token) {
+                sendPushNotification(adminUser.push_token, "Advance Paid! 💰", `${currentUser.name} paid ₹100 and Confirmed Order #${order.id}.`, `${window.location.origin}/?view=seller_orders`);
+             }
+          }
+        },
+        prefill: {
+          name: currentUser?.name,
+          contact: currentUser?.phone,
+        },
+        theme: { color: "#FF3F6C" }
+      };
+
+      const rzp1 = new (window as any).Razorpay(options);
+      rzp1.on('payment.failed', function (response: any) {
+         console.error("Razorpay Error:", response.error);
+         alert("Payment Failed: " + response.error.description);
+      });
+      rzp1.open();
+    } catch (error) {
+      console.error(error);
+      alert("Something went wrong!");
+    }
+  };
+
   const cancelOrder = async () => {
     if (!confirm("Are you sure you want to cancel this order?")) return;
     setIsCancelling(true);
@@ -1073,7 +1189,7 @@ const openOrderDetails = async (order: any) => {
     }, 800);
   };
 
-  const handlePlaceOrderClick = () => {
+const handlePlaceOrderClick = async () => {
     if (!currentUser) { alert("Please login to place an order."); setView('auth_phone'); return; }
     
     if (!addressData.name || !addressData.mobile || !addressData.pincode || !addressData.address || !addressData.city || !addressData.state) { 
@@ -1088,7 +1204,78 @@ const openOrderDetails = async (order: any) => {
       return;
     }
 
-    handlePlaceOrder();
+    setIsPlacingOrder(true); 
+    setOrderProgress(5);
+
+    const isScriptLoaded = await loadRazorpayScript();
+    if (!isScriptLoaded) {
+      alert("Razorpay SDK failed to load. Are you online?");
+      setIsPlacingOrder(false);
+      return;
+    }
+
+    try {
+      setOrderProgress(15);
+      const response = await fetch('/api/razorpay', { method: 'POST' });
+      const data = await response.json();
+      
+      if (!data.success) {
+         alert("Failed to initiate payment. Please check backend API.");
+         setIsPlacingOrder(false);
+         return;
+      }
+
+      setOrderProgress(25);
+
+      // 🌟 NAYA: Crash Protection Timer
+      const rzpOpenTime = Date.now();
+
+      const options = {
+        key: "rzp_live_Sm6dnONggYc7iv", // 100% Asli Key
+        amount: data.order.amount,
+        currency: data.order.currency,
+        name: "Nayika Naari",
+        description: "Advance Shipping Payment",
+        order_id: data.order.id, // Backend se aayi ID
+        handler: function (response: any) {
+          // 🎉 SUCCESS: Payment done
+         handlePlaceOrder(true, response.razorpay_payment_id);
+        },
+        modal: {
+          ondismiss: function () {
+            // 🌟 LOGIC: Check karo popup turant crash toh nahi hua?
+            const rzpCloseTime = Date.now();
+            if (rzpCloseTime - rzpOpenTime < 2000) {
+              // Agar 2 second me band hua, matlab error hai
+              alert("Razorpay blocked the popup! Please press F12 and check the Console for the exact error.");
+              setIsPlacingOrder(false);
+            } else {
+              // User ne manually close kiya, ab WhatsApp par bhejo
+              handlePlaceOrder(false);
+            }
+          }
+        },
+        prefill: {
+          name: currentUser.name || addressData.name,
+          contact: currentUser.phone || addressData.mobile,
+        },
+        theme: { color: "#FF3F6C" }
+      };
+
+      const rzp1 = new (window as any).Razorpay(options);
+      
+      // Error Listener
+      rzp1.on('payment.failed', function (response: any) {
+         console.error("Razorpay Error:", response.error);
+      });
+
+      rzp1.open();
+      
+    } catch (error) {
+      console.error(error);
+      setIsPlacingOrder(false);
+      alert("Something went wrong in frontend!");
+    }
   };
 
   const sendPushNotification = async (targetToken: string, title: string, message: string, url: string) => {
@@ -1113,26 +1300,34 @@ const openOrderDetails = async (order: any) => {
     }
   };
 
-  const handlePlaceOrder = async () => {
+ // Function signature change karo
+const handlePlaceOrder = async (paymentSuccess: boolean = false, rzpPaymentId: string = null) => {
     if (activeCartItems.length === 0) return;
-    setIsPlacingOrder(true); setOrderProgress(10);
+    
+    // Loader ON
+    setIsPlacingOrder(true); 
+    setOrderProgress(20);
 
     try {
-      setOrderProgress(40);
       const totalPcs = groupedCart.reduce((a, b) => a + b.totalPcs, 0);
       const totalBoxes = groupedCart.reduce((a, b) => a + b.totalBoxes, 0);
       const orderAmount = cartTotalAmount; 
 
+      // 1. ORDER CREATE
       const { data: order, error } = await supabase.from('orders').insert([{
         userid: currentUser.id, pincode: addressData.pincode, city: addressData.city, state: addressData.state,
         address: addressData.address, phone: addressData.mobile, box: totalBoxes, pcs: totalPcs,
-        status: 'Pending', amount: orderAmount, finalAmount: orderAmount, advance: shippingCharge,
-        meta: { screenshot_uploaded: false, sellerName: activeCartSeller }
+        status: paymentSuccess ? 'Confirmed' : 'Pending', 
+        rzp_payment_id: rzpPaymentId, //
+        amount: orderAmount, finalAmount: orderAmount, 
+        advance: paymentSuccess ? 0 : shippingCharge, 
+        meta: { screenshot_uploaded: paymentSuccess ? true : false, sellerName: activeCartSeller }
       }]).select().single();
 
       if (error) throw error;
-      setOrderProgress(60);
+      setOrderProgress(40);
 
+      // 2. ORDER DETAILS CREATE
       const details = activeCartItems.map(i => {
         const meta = safeParseJSON(i.meta, {});
         const isOOS = meta?.attributes?.available_sizes?.[i.selectedSize]?.is_active === false;
@@ -1146,18 +1341,31 @@ const openOrderDetails = async (order: any) => {
       });
       await supabase.from('order_details').insert(details);
       
+      setOrderProgress(60);
+
+      // 🌟 3. TUMHARA DIRECT PRODUCT ID LOGIC (THE MASTERSTROKE)
+   // 🌟 3. TUMHARA DIRECT PRODUCT ID LOGIC (THE MASTERSTROKE)
+      // 🔥 UPDATE ki jagah DELETE kar rahe hain taaki Duplicate Key constraint hit hi na ho!
+      const productIdsToUpdate = activeCartItems.map(item => item.id);
+      
+      const { error: cartError } = await supabase.from('cart_items')
+        .delete() // 🌟 YAHAN CHANGE KIYA HAI
+        .in('product_id', productIdsToUpdate)
+        .eq('user_id', currentUser.id)
+        .eq('status', 0);
+
+      if (cartError) {
+         alert("Database Error: " + cartError.message);
+         throw cartError;
+      }
       setOrderProgress(80);
 
-      for (const item of activeCartItems) {
-         await supabase.from('cart_items')
-           .update({ status: 1, updated_at: getLocalTimestamp() })
-           .match({ user_id: currentUser.id, product_id: item.id, size: item.selectedSize, status: 0 });
-      }
-
-      setCart(prev => prev.filter(item => (item.seller || 'Nayika Naari') !== activeCartSeller));
+      // 4. UI SE CART SAAF KRO (Strict ID match)
+      setCart(prev => prev.filter(item => !productIdsToUpdate.includes(item.id)));
       
       setOrderProgress(100);
 
+      // 5. MESSAGE BANAO
       let msg = `*🚨 New Order Placed! (Order #${order.id})*\n*Seller:* ${activeCartSeller}\n\n*Name:* ${addressData.name}\n*Phone:* ${addressData.mobile}\n*City:* ${addressData.city}, ${addressData.state}\n\n*📦 ORDER DETAILS:*\n------------------------\n`;
       groupedCart.forEach((group, index) => { 
         msg += `*${index + 1}. ${group.name} (${group.subcategory})*\n`;
@@ -1169,29 +1377,33 @@ const openOrderDetails = async (order: any) => {
         });
         msg += `\n`;
       });
-      
       msg += `------------------------\n*Total Amount:* ₹${orderAmount}/-`;
-      if (shippingCharge > 0) {
-        msg += `\n*Advance:* ₹${shippingCharge}/-`;
+      
+      if (paymentSuccess) {
+        msg += `\n*Advance:* ₹100 Paid Online ✅`;
+      } else if (shippingCharge > 0) {
+        msg += `\n*Advance:* ₹${shippingCharge}/- (Pending ❌)`;
+        msg += `\n\n_Please pay ₹100 using app to confirm order._`;
       }
-      msg += `\n\n_Screenshot attached in app._`;
       
       const myWebsiteUrl = window.location.origin;
       if (currentUser?.push_token) {
-         sendPushNotification(currentUser.push_token, "Order Placed Successfully! 🎉", `Hey ${addressData.name}, your order #${order.id} for ₹${orderAmount} has been sent.`, `${myWebsiteUrl}/?view=order_detail&order_id=${order.id}`);
+         sendPushNotification(currentUser.push_token, paymentSuccess ? "Order Confirmed! 🎉" : "Order Placed (Pending)", `Hey ${addressData.name}, your order #${order.id} for ₹${orderAmount} has been registered.`, `${myWebsiteUrl}/?view=order_detail&order_id=${order.id}`);
       }
 
-      const { data: adminUser } = await supabase.from('users').select('push_token').eq('phone', 9758008624).single();
-      if (adminUser?.push_token) {
-         sendPushNotification(adminUser.push_token, "New Order Received! 🛍️", `${addressData.name} placed Order #${order.id} for ₹${orderAmount}.`, `${myWebsiteUrl}/?view=seller_orders`);
-      }
+      // 🌟 6. SAFE REDIRECT 
+      // Pehle background me home (plp) page set karo, phir truck band karo
+      setView('plp'); 
+      
+     // 🌟 FIX: Direct location change, Bypass mobile popup blocker
+      setIsPlacingOrder(false); 
+      setPaymentScreenshot(null);
+      window.location.href = `https://wa.me/919758008624?text=${encodeURIComponent(msg)}`;
 
-      setTimeout(() => {
-        setIsPlacingOrder(false); setPaymentScreenshot(null);
-        window.location.href = `https://wa.me/919758008624?text=${encodeURIComponent(msg)}`;
-        setView('plp');
-      }, 1000);
-    } catch (e: any) { alert("Order Failed: " + e.message); setIsPlacingOrder(false); }
+    } catch (e: any) { 
+       alert("Order Failed: " + e.message); 
+       setIsPlacingOrder(false); 
+    }
   };
 
   const openPDP = (product: any) => {
@@ -1296,7 +1508,7 @@ if (view === 'splash') return (
 
       <div 
         className="fixed bottom-6 right-4 w-[40px] h-[40px] rounded-full flex items-center justify-center shadow-[0_5px_20px_rgba(0,0,0,0.15)] cursor-pointer active:scale-95 transition-transform z-[9999] bg-white border border-gray-100"
-        onClick={() => window.location.href = 'https://wa.me/919758008624?text=Hello Nayika Nari !'}
+        onClick={() => window.open('https://wa.me/919758008624?text=Hello Nayika Nari !', '_blank')}
       >
         <svg height="66px" width="66px" version="1.1" id="Layer_1" xmlns="http://www.w3.org/2000/svg" xmlnsXlink="http://www.w3.org/1999/xlink" viewBox="0 0 418.135 418.135" xmlSpace="preserve">
           <g id="SVGRepo_bgCarrier" strokeWidth="0"></g>
@@ -2015,40 +2227,11 @@ if (view === 'splash') return (
                         )}
                         <div className="p-3 flex justify-between items-center w-full">
                           <div className="flex flex-col ml-1">
-                             <p className="font-bold text-gray-600 text-[11px]">
-                               <span>{shippingCharge > 0 ? 'To Confirm, Pay Shipping 100/- on' : 'Free Shipping'}</span>
-                             </p>
-                             {shippingCharge > 0 && (
-                               <div className="flex flex-col justify-center mt-1">
-                                  <div className="flex bg-white border border-blue-200 rounded-md overflow-hidden shadow-sm w-fit">
-                                    <button onClick={(e) => {
-                                        e.stopPropagation();
-                                        window.location.href = `tez://upi/pay?pa=gpay-11165292302@okbizaxis&pn=Nayika%20Naari&tn=${currentUser?.name}_${currentUser?.phone}&am=100&cu=INR`;
-                                      }} 
-                                      className="px-2.5 py-1.5 text-[9px] font-black text-blue-700 hover:bg-blue-50 border-r border-blue-100 active:bg-blue-100 transition-colors"
-                                    >
-                                      GPay
-                                    </button>
-                                    <button onClick={(e) => {
-                                        e.stopPropagation();
-                                        window.location.href = `phonepe://pay?pa=gpay-11165292302@okbizaxis&pn=Nayika%20Naari&tn=${currentUser?.name}_${currentUser?.phone}&am=100&cu=INR`;
-                                      }} 
-                                      className="px-2.5 py-1.5 text-[9px] font-black text-purple-700 hover:bg-purple-50 border-r border-blue-100 active:bg-purple-100 transition-colors"
-                                    >
-                                      PhonPe
-                                    </button>
-                                    <button onClick={(e) => {
-                                        e.stopPropagation();
-                                        window.location.href = `paytmmp://pay?pa=gpay-11165292302@okbizaxis&pn=Nayika%20Naari&tn=${currentUser?.name}_${currentUser?.phone}&am=100&cu=INR`;
-                                      }} 
-                                      className="px-2.5 py-1.5 text-[9px] font-black text-[#00B9F5] hover:bg-[#F0FAFF] active:bg-[#D9F4FF] transition-colors"
-                                    >
-                                      Paytm
-                                    </button>
-                                  </div>
-                                </div>
-                             )}
-                          </div>
+   <p className="font-bold text-gray-600 text-[11px]">
+     <span>Shipping ₹100 Advance to confirm order</span>
+   </p>
+
+</div>
                           <div className="flex items-center gap-2">
                             <button onClick={handlePlaceOrderClick} className={`px-5 py-3.5 rounded font-bold uppercase tracking-widest text-[12px] shadow-sm transition-all ${isMovMet ? 'text-white active:scale-95' : 'bg-gray-100 text-gray-400 cursor-not-allowed opacity-70'}`} style={isMovMet ? {backgroundColor: theme.primary} : {}}>
                                 PLACE ORDER (₹{cartTotalAmount})
@@ -2150,40 +2333,23 @@ if (view === 'splash') return (
                         </div>
                       )}
 
-                     {o.status === 'Pending' && o.advance === 100 && !safeParseJSON(o.meta, {})?.screenshot_uploaded && (
+                     {/* 🌟 FIX: Purane GPay/PhonePe hta kar Razorpay laga diya */}
+                      {/* 🌟 FIX: advance 100 ki jagah > 0 kar diya */}
+{o.status === 'Pending' && o.advance > 0 && (
                          <div className="mb-3 flex flex-col gap-2.5 bg-red-50 p-3 rounded-xl border border-red-100">
                            <p className="text-[11px] font-bold text-[#FF3F6C] text-center leading-tight">
-                             Pay & Upload ₹100 Payment Screenshot
+                             Confirm your order by paying ₹100 advance
                            </p>
                            
-                           <div className="flex w-full bg-white border border-blue-200 rounded-lg overflow-hidden shadow-sm">
-                             <button onClick={(e) => {
-                                 e.stopPropagation();
-                                 window.location.href = `tez://upi/pay?pa=gpay-11165292302@okbizaxis&pn=Nayika%20Naari&tn=${currentUser?.name}_${currentUser?.phone}&am=${o.advance}&cu=INR`;
-                               }} 
-                               className="flex-1 py-2.5 text-[10px] font-black text-blue-700 hover:bg-blue-50 border-r border-blue-100 active:bg-blue-100 transition-colors text-center"
-                             >
-                               GPay
-                             </button>
-
-                             <button onClick={(e) => {
-                                 e.stopPropagation();
-                                 window.location.href = `phonepe://pay?pa=gpay-11165292302@okbizaxis&pn=Nayika%20Naari&tn=${currentUser?.name}_${currentUser?.phone}&am=${o.advance}&cu=INR`;
-                               }} 
-                               className="flex-1 py-2.5 text-[10px] font-black text-purple-700 hover:bg-purple-50 border-r border-blue-100 active:bg-purple-100 transition-colors text-center"
-                             >
-                               PhonePe
-                             </button>
-
-                             <button onClick={(e) => {
-                                 e.stopPropagation();
-                                 window.location.href = `paytmmp://pay?pa=gpay-11165292302@okbizaxis&pn=Nayika%20Naari&tn=${currentUser?.name}_${currentUser?.phone}&am=${o.advance}&cu=INR`;
-                               }} 
-                               className="flex-1 py-2.5 text-[10px] font-black text-[#00B9F5] hover:bg-[#F0FAFF] active:bg-[#D9F4FF] transition-colors text-center"
-                             >
-                               Paytm
-                             </button>
-                           </div>
+                           <button onClick={(e) => {
+                               e.stopPropagation(); // 🌟 Zaroori: Isse card par click hone se 'Order Detail' open nahi hoga
+                               handlePendingPayment(o);
+                             }} 
+                             className="w-full bg-gray-900 text-white py-2.5 rounded-lg text-[11px] font-black cursor-pointer active:scale-95 transition-transform flex justify-center items-center gap-2 shadow-sm"
+                           >
+                             <img src="https://razorpay.com/favicon.png" className="w-3.5 h-3.5 invert" alt="rzp" />
+                             Pay ₹100 via Razorpay
+                           </button>
                          </div>
                       )}
                     </div>
@@ -2293,42 +2459,18 @@ if (view === 'splash') return (
                       </div>
                       
                       <div className="shrink-0 flex items-center gap-2">
-                         <div className="flex bg-white border border-blue-200 rounded-lg overflow-hidden shadow-sm">
-                           <button onClick={(e) => {
-                               e.stopPropagation();
-                               window.location.href = `tez://upi/pay?pa=gpay-11165292302@okbizaxis&pn=Nayika%20Naari&tn=${currentUser?.name}_${currentUser?.phone}&am=${selectedOrder.advance}&cu=INR`;
-                             }} 
-                             className="px-2 py-2 text-[9px] font-black text-blue-700 hover:bg-blue-50 border-r border-blue-100 active:bg-blue-100 transition-colors"
-                           >
-                             GPay
-                           </button>
-
-                           <button onClick={(e) => {
-                               e.stopPropagation();
-                               window.location.href = `phonepe://pay?pa=gpay-11165292302@okbizaxis&pn=Nayika%20Naari&tn=${currentUser?.name}_${currentUser?.phone}&am=${selectedOrder.advance}&cu=INR`;
-                             }} 
-                             className="px-2 py-2 text-[9px] font-black text-purple-700 hover:bg-purple-50 border-r border-blue-100 active:bg-purple-100 transition-colors"
-                           >
-                             PhnPe
-                           </button>
-
-                           <button onClick={(e) => {
-                               e.stopPropagation();
-                               window.location.href = `paytmmp://pay?pa=gpay-11165292302@okbizaxis&pn=Nayika%20Naari&tn=${currentUser?.name}_${currentUser?.phone}&am=${selectedOrder.advance}&cu=INR`;
-                             }} 
-                             className="px-2 py-2 text-[9px] font-black text-[#00B9F5] hover:bg-[#F0FAFF] active:bg-[#D9F4FF] transition-colors"
-                           >
-                             Paytm
-                           </button>
-                         </div>
-
-                         <input type="file" id="update-ss" className="hidden" accept="image/*" onChange={uploadOrderScreenshot} />
-                         <label htmlFor="update-ss" className="bg-gray-900 text-white px-3 py-2 rounded-lg text-[10px] font-black cursor-pointer active:scale-95 transition-transform flex items-center gap-1 m-0">
-                            {isUploadingScreenshot ? <Loader2 size={12} className="animate-spin" /> : <UploadCloud size={12} />} 
-                            {orderMeta.screenshot_uploaded ? 'Update SS' : 'Upload SS'}
-                         </label>
-
-                      </div>
+   {/* 🌟 FIX: Sahi function pass kiya */}
+   <button 
+     onClick={() => handlePendingPayment(selectedOrder)} 
+     className="bg-gray-900 text-white px-4 py-2.5 rounded-lg text-[10px] font-black cursor-pointer active:scale-95 transition-transform flex items-center gap-2 shadow-sm"
+   >
+      <img src="https://razorpay.com/favicon.png" className="w-3 h-3 invert" />
+      Pay ₹100 Shipping to confirm order
+   </button>
+   
+   <input type="file" id="update-ss" className="hidden" accept="image/*" onChange={uploadOrderScreenshot} />
+   {/* Screenshot wala button optional rakh sakte ho fallback ke liye */}
+</div>
                    </div>
                 </div>
               )}
@@ -2709,7 +2851,7 @@ if (view === 'splash') return (
       {/* 🌟 GLOBAL WHATSAPP ICON */}
       <div 
         className="fixed bottom-[85px] right-4 w-[40px] h-[40px] rounded-full flex items-center justify-center shadow-[0_5px_20px_rgba(0,0,0,0.15)] cursor-pointer active:scale-95 transition-transform z-50 bg-white border border-gray-100"
-        onClick={() => window.location.href = 'https://wa.me/919758008624?text=Hello Nayika Nari !'}
+        onClick={() => window.open('https://wa.me/919758008624?text=Hello Nayika Nari !', '_blank')}
       >
         <svg height="66px" width="66px" version="1.1" id="Layer_1" xmlns="http://www.w3.org/2000/svg" xmlnsXlink="http://www.w3.org/1999/xlink" viewBox="0 0 418.135 418.135" xmlSpace="preserve">
           <g id="SVGRepo_bgCarrier" strokeWidth="0"></g>
