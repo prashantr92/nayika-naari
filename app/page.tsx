@@ -1030,6 +1030,49 @@ const openOrderDetails = async (order: any) => {
     setIsCancelling(true);
     const { error } = await supabase.from('orders').update({status: 'Cancelled'}).eq('id', selectedOrder.id);
     if (!error) {
+       // 🌟 2. NAYA: STOCK RESTORE LOGIC (Cancel hone par maal wapas dukan mein)
+       try {
+         const { data: orderItemsToRestore } = await supabase.from('order_details').select('productid, size, box').eq('orderid', selectedOrder.id);
+         
+         if (orderItemsToRestore && orderItemsToRestore.length > 0) {
+            const productIds = [...new Set(orderItemsToRestore.map(item => item.productid))];
+            const { data: dbProducts } = await supabase.from('products').select('id, meta').in('id', productIds);
+            
+            if (dbProducts) {
+               const restorePromises = dbProducts.map(dbProd => {
+                  let metaObj = safeParseJSON(dbProd.meta, {});
+                  let isChanged = false;
+                  
+                  const itemsForThisProduct = orderItemsToRestore.filter(item => item.productid === dbProd.id);
+                  
+                  itemsForThisProduct.forEach(cancelledItem => {
+                     const size = cancelledItem.size;
+                     const cancelledBoxes = cancelledItem.box; 
+                     
+                     if (metaObj?.attributes?.available_sizes?.[size]) {
+                        let currentStock = metaObj.attributes.available_sizes[size].stock || 0;
+                        metaObj.attributes.available_sizes[size].stock = currentStock + cancelledBoxes;
+                        
+                        if (metaObj.attributes.available_sizes[size].stock > 0) {
+                           metaObj.attributes.available_sizes[size].is_active = true;
+                        }
+                        isChanged = true;
+                     }
+                  });
+                  
+                  if (isChanged) {
+                     return supabase.from('products').update({ meta: JSON.stringify(metaObj) }).eq('id', dbProd.id);
+                  }
+                  return null;
+               }).filter(Boolean);
+               
+               if (restorePromises.length > 0) await Promise.all(restorePromises);
+            }
+         }
+       } catch (err) {
+         console.error("Stock restore failed during cancellation:", err);
+       }
+
        setSelectedOrder({...selectedOrder, status: 'Cancelled'});
        showToast("Order Cancelled Successfully");
        
@@ -1037,7 +1080,7 @@ const openOrderDetails = async (order: any) => {
        if (adminUser?.push_token) {
           sendPushNotification(
             adminUser.push_token, "Order Cancelled ❌", 
-            `${currentUser.name} cancelled their Pending Order #${selectedOrder.id}.`, 
+            `${currentUser.name} cancelled their Pending Order #${selectedOrder.id}. Stock restored.`, 
             `${window.location.origin}/?view=seller_orders` 
           );
        }
@@ -1433,14 +1476,54 @@ const handlePlaceOrder = async (paymentSuccess: boolean = false, rzpPaymentId: s
           rate: i.unitPrice, meta: { name: i.name, img: i.displayImg }
         }
       });
-      await supabase.from('order_details').insert(details);
-      
+    await supabase.from('order_details').insert(details);
+      setOrderProgress(50);
+
+      // 🌟 2.5 NAYA: DEDUCT STOCK FROM PRODUCTS TABLE
+      const productIdsToUpdate = activeCartItems.map(item => item.id);
+      const { data: latestProducts } = await supabase.from('products').select('id, meta').in('id', productIdsToUpdate);
+
+      if (latestProducts) {
+        const updatePromises = latestProducts.map(dbProd => {
+           let metaObj = safeParseJSON(dbProd.meta, {});
+           let isChanged = false;
+           
+           const cartItemsForThisProduct = activeCartItems.filter(item => item.id === dbProd.id);
+           
+           cartItemsForThisProduct.forEach(cartItem => {
+              const size = cartItem.selectedSize;
+              const orderedBoxes = Math.ceil(cartItem.qtyPieces / cartItem.boxSize);
+              
+              if (metaObj?.attributes?.available_sizes?.[size]) {
+                 let currentStock = metaObj.attributes.available_sizes[size].stock || 0;
+                 let newStock = currentStock - orderedBoxes;
+                 
+                 if (newStock < 0) newStock = 0; 
+                 metaObj.attributes.available_sizes[size].stock = newStock;
+                 
+                 if (newStock === 0) {
+                    metaObj.attributes.available_sizes[size].is_active = false;
+                 }
+                 isChanged = true;
+              }
+           });
+           
+           if (isChanged) {
+              return supabase.from('products').update({ meta: JSON.stringify(metaObj) }).eq('id', dbProd.id);
+           }
+           return null;
+        }).filter(Boolean);
+        
+        if (updatePromises.length > 0) {
+           await Promise.all(updatePromises);
+        }
+      }
       setOrderProgress(60);
 
       // 🌟 3. TUMHARA DIRECT PRODUCT ID LOGIC (THE MASTERSTROKE)
    // 🌟 3. TUMHARA DIRECT PRODUCT ID LOGIC (THE MASTERSTROKE)
       // 🔥 UPDATE ki jagah DELETE kar rahe hain taaki Duplicate Key constraint hit hi na ho!
-      const productIdsToUpdate = activeCartItems.map(item => item.id);
+      
       
       const { error: cartError } = await supabase.from('cart_items')
         .delete() // 🌟 YAHAN CHANGE KIYA HAI

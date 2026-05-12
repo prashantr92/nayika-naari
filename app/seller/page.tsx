@@ -275,8 +275,8 @@ export default function SellerDashboard() {
 
   const fetchMyProducts = async () => {
     setLoading(true);
-    // 🌟 FIX: Faltu columns hataye
-    let query = supabase.from('products').select('id, name, subcategory, cost, mrp, meta, img, status, seller');
+// 🌟 FIX 1: 'description' column ko select query mein add kiya
+    let query = supabase.from('products').select('id, name, subcategory, description, cost, mrp, meta, img, status, seller');
     if (!isAdmin) {
        query = query.eq('seller', currentUser?.name);
     }
@@ -593,6 +593,84 @@ const handleProductToggle = async (product: any) => {
           meta: JSON.stringify(orderMeta)
       }).eq('id', selectedOrder.id);
 
+      // 🌟 NAYA: STOCK ADJUSTMENT LOGIC (Cancel, Update Qty, Add New Items)
+      try {
+        const stockAdjustments: any = {}; 
+        const isNowCancelled = orderStatus === 'Cancelled' && selectedOrder.status !== 'Cancelled';
+
+        if (isNowCancelled) {
+          // 1. Agar cancel ho raha hai, toh purane items ka poora stock wapas daalo
+          orderItems.forEach((item: any) => {
+             const boxSize = safeParseJSON(item.meta, {})?.attributes?.box_size?.[0] || 6;
+             const origQ = item.remainingQty !== undefined && item.remainingQty !== null ? item.remainingQty : item.qty;
+             const boxesToRestore = Math.ceil(origQ / boxSize);
+             if (boxesToRestore > 0) {
+               if (!stockAdjustments[item.productid]) stockAdjustments[item.productid] = {};
+               stockAdjustments[item.productid][item.size] = (stockAdjustments[item.productid][item.size] || 0) + boxesToRestore;
+             }
+          });
+        } else if (orderStatus !== 'Cancelled') {
+          // 2. Agar cancel nahi hai, tab Check Qty Changes & New Items
+          orderItems.forEach((item: any) => {
+             const boxSize = safeParseJSON(item.meta, {})?.attributes?.box_size?.[0] || 6;
+             const origQ = item.remainingQty !== undefined && item.remainingQty !== null ? item.remainingQty : item.qty;
+             const newQ = editedQtys[item.id] !== undefined ? editedQtys[item.id] : origQ;
+             
+             // Kitna box kam ya zyada hua
+             const boxDelta = Math.ceil(origQ / boxSize) - Math.ceil(newQ / boxSize); 
+             if (boxDelta !== 0) {
+               if (!stockAdjustments[item.productid]) stockAdjustments[item.productid] = {};
+               stockAdjustments[item.productid][item.size] = (stockAdjustments[item.productid][item.size] || 0) + boxDelta;
+             }
+          });
+
+          // Nayi items (jo update mode me add hui hain) unka stock deduct karo
+          validNewItems.forEach(item => {
+             const boxSize = safeParseJSON(item.product.meta, {})?.attributes?.box_size?.[0] || 6;
+             const boxesToDeduct = Math.ceil(item.qty / boxSize);
+             if (boxesToDeduct > 0) {
+               if (!stockAdjustments[item.product.id]) stockAdjustments[item.product.id] = {};
+               stockAdjustments[item.product.id][item.size] = (stockAdjustments[item.product.id][item.size] || 0) - boxesToDeduct;
+             }
+          });
+        }
+
+        // Apply Adjustments to DB
+        const productIdsToUpdate = Object.keys(stockAdjustments);
+        if (productIdsToUpdate.length > 0) {
+          const { data: dbProducts } = await supabase.from('products').select('id, meta').in('id', productIdsToUpdate);
+          if (dbProducts) {
+             const updatePromises = dbProducts.map(dbProd => {
+                let metaObj = safeParseJSON(dbProd.meta, {});
+                let isChanged = false;
+                const adjustments = stockAdjustments[dbProd.id];
+                
+                for (let size in adjustments) {
+                   const delta = adjustments[size];
+                   if (metaObj?.attributes?.available_sizes?.[size]) {
+                      let currentStock = metaObj.attributes.available_sizes[size].stock || 0;
+                      let newStock = currentStock + delta;
+                      if (newStock < 0) newStock = 0;
+                      metaObj.attributes.available_sizes[size].stock = newStock;
+                      
+                      // Agar cancel hone ya qty kam hone se stock badha hai toh wapas ON karo
+                      if (newStock === 0) metaObj.attributes.available_sizes[size].is_active = false;
+                      else if (newStock > 0 && delta > 0) metaObj.attributes.available_sizes[size].is_active = true;
+                      
+                      isChanged = true;
+                   }
+                }
+                if (isChanged) return supabase.from('products').update({ meta: JSON.stringify(metaObj) }).eq('id', dbProd.id);
+                return null;
+             }).filter(Boolean);
+             if (updatePromises.length > 0) await Promise.all(updatePromises);
+          }
+        }
+      } catch (err) {
+         console.error("Stock adjustment failed:", err);
+      }
+
+
       if (statusChanged || isQtyChanged) {
         const { data: buyer } = await supabase.from('users').select('push_token').eq('id', selectedOrder.userid).single();
         if (buyer?.push_token) {
@@ -707,8 +785,26 @@ const handleProductToggle = async (product: any) => {
       
       const metaJSON = JSON.stringify({ attributes: { available_colors: [], box_size: [parseInt(uploadForm.boxSize) || 6], available_sizes: sizeConfig } });
       const mrp = parseFloat(uploadForm.mrp); const cost = parseFloat(uploadForm.cost);
-      const productData = { name: uploadForm.name, subcategory: uploadForm.subcategory, mrp, cost, discount: Math.round(((mrp - cost) / mrp) * 100), description: uploadForm.description, status: 1, meta: metaJSON, img: JSON.stringify({ images: [...existingImages, ...imageUrls] }), seller: currentUser.name, ...(isEditMode ? {} : { createdAt: getLocalTimestamp() }) };
-
+const productData = {
+        // 🌟 FIX 3: Hamesha uploadForm se data uthao taaki edit/save dono chalein
+        name: uploadForm.name,
+        subcategory: uploadForm.subcategory,
+        description: uploadForm.description, 
+        price: parseFloat(uploadForm.mrp) || 0,
+        mrp: parseFloat(uploadForm.mrp) || 0,
+        cost: parseFloat(uploadForm.cost) || 0,
+        discount: 0,
+        meta: JSON.stringify({ 
+          attributes: { 
+            available_colors: [], 
+            box_size: [parseInt(uploadForm.boxSize) || 6], 
+            available_sizes: sizeConfig 
+          } 
+        }),
+        img: JSON.stringify({ images: [...existingImages, ...imageUrls] }),
+        seller: currentUser.phone,
+        updated_at: getLocalTimestamp()
+      };
       if (isEditMode && editingProductId) await supabase.from('products').update(productData).eq('id', editingProductId);
       else await supabase.from('products').insert([productData]);
       
@@ -722,7 +818,28 @@ const handleProductToggle = async (product: any) => {
   };
 
   const resetUploadForm = () => { setIsEditMode(false); setEditingProductId(null); setUploadForm({ name: '', subcategory: '', mrp: '', cost: '', description: '', boxSize: '6' }); setUploadImages([]); setUploadImagePreviews([]); setExistingImages([]); setSizeConfig({}); };
-  const startEditProduct = (p: any) => { setIsEditMode(true); setEditingProductId(p.id); setUploadForm({ name: p.name, subcategory: p.subcategory, mrp: p.mrp.toString(), cost: p.cost.toString(), description: p.description || '', boxSize: safeParseJSON(p.meta, {})?.attributes?.box_size?.[0]?.toString() || '6' }); setExistingImages(safeParseJSON(p.img, { images: [] }).images || []); setSizeConfig(safeParseJSON(p.meta, {})?.attributes?.available_sizes || {}); setUploadImages([]); setUploadImagePreviews([]); setView('upload'); };
+ const startEditProduct = (p: any) => { 
+    setIsEditMode(true); 
+    setEditingProductId(p.id); 
+    // 🌟 FIX 2: editingProduct ko bhi set karna zaroori hai
+    setEditingProduct(p); 
+    
+    setUploadForm({ 
+      name: p.name || '', 
+      subcategory: p.subcategory || '', 
+      mrp: p.mrp ? p.mrp.toString() : '0', 
+      cost: p.cost ? p.cost.toString() : '0', 
+      // Ab fetch query theek hone ke baad yahan value aa jayegi
+      description: p.description || '', 
+      boxSize: safeParseJSON(p.meta, {})?.attributes?.box_size?.[0]?.toString() || '6' 
+    }); 
+    
+    setExistingImages(safeParseJSON(p.img, { images: [] }).images || []); 
+    setSizeConfig(safeParseJSON(p.meta, {})?.attributes?.available_sizes || {}); 
+    setUploadImages([]); 
+    setUploadImagePreviews([]); 
+    setView('upload'); 
+  };
   const startCopyProduct = (p: any) => { setIsEditMode(false); setEditingProductId(null); setUploadForm({ name: '', subcategory: p.subcategory, mrp: '', cost: '', description: p.description || '', boxSize: safeParseJSON(p.meta, {})?.attributes?.box_size?.[0]?.toString() || '6' }); setSizeConfig(safeParseJSON(p.meta, {})?.attributes?.available_sizes || {}); setExistingImages([]); setUploadImages([]); setUploadImagePreviews([]); setView('upload'); showToast("Details copied."); };
   const openVariantSheet = (p: any) => { setEditingProduct(p); setEditingSizeConfig(safeParseJSON(p.meta, {})?.attributes?.available_sizes || {}); setActiveSheet(true); };
   const saveVariantStatus = async () => { setIsUpdatingVariant(true); try { const meta = safeParseJSON(editingProduct.meta, {}); meta.attributes.available_sizes = editingSizeConfig; await supabase.from('products').update({ meta: JSON.stringify(meta) }).eq('id', editingProduct.id); showToast("Variants Updated!"); setActiveSheet(false); fetchMyProducts(); } catch (e: any) { alert("Failed: " + e.message); } finally { setIsUpdatingVariant(false); } };
@@ -1237,7 +1354,15 @@ const safeUserQuery = userSearchQuery.toLowerCase().trim();
                   </div>
                 </div>
               )}
-              <div><label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Description</label><textarea className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm font-medium outline-none h-24" value={uploadForm.description} onChange={e => setUploadForm({...uploadForm, description: e.target.value})} /></div>
+              <div><label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Description</label>
+              <textarea 
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm font-medium outline-none h-24 focus:border-blue-500" 
+                  value={uploadForm.description} 
+                  onChange={e => setUploadForm({...uploadForm, description: e.target.value})} 
+                  placeholder="Material, Fit, or Style details..."
+                />
+
+              </div>
               <div>
                 <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-2 block flex items-center gap-1"><ImageIcon size={14}/> Images</label>
                 <div className="grid grid-cols-3 gap-3 mb-3">
@@ -1596,7 +1721,11 @@ const safeUserQuery = userSearchQuery.toLowerCase().trim();
                             <div key={item.id} className="flex justify-between items-center text-sm font-bold bg-white border border-gray-100 p-2 rounded-lg">
                               <span className="w-10">{item.size}</span>
                               <span className={`w-16 text-center text-[10px] ${isChanged ? 'text-red-400 line-through' : 'text-gray-500 font-bold'}`}>{origQ}</span>
-                              <div className="w-20 flex justify-center"><input type="number" className="w-14 text-center bg-blue-50 border border-blue-200 text-blue-700 rounded-md py-1 outline-none font-black" value={currentQ} onChange={(e) => setEditedQtys(prev => ({...prev, [item.id]: parseInt(e.target.value) || 0}))} /></div>
+                              <div className="w-20 flex flex-col items-center">
+                                <input type="number" className="w-14 text-center bg-blue-50 border border-blue-200 text-blue-700 rounded-md py-1 outline-none font-black" value={currentQ} onChange={(e) => setEditedQtys(prev => ({...prev, [item.id]: parseInt(e.target.value) || 0}))} />
+                                {/* 🌟 NAYA: Seller ko available stock dikhega par edit par koi limit nahi */}
+                                <span className="text-[8px] text-gray-400 font-bold mt-0.5">Stock: {safeParseJSON(item.meta, {})?.attributes?.available_sizes?.[item.size]?.stock || 0}</span>
+                              </div>
                               
                               <div className="flex flex-col items-end w-16 shrink-0">
                                 <span className="text-right text-gray-700 leading-tight">₹{item.rate}</span>
@@ -2331,7 +2460,11 @@ const safeUserQuery = userSearchQuery.toLowerCase().trim();
                                  {/* 🌟 FIX: Size ke naam ke bagal mein OOS badge lagaya */}
                                  <div className="flex items-center gap-2">
                                     <p className="font-black text-gray-900 text-base">{size}</p>
-                                    {isOOS && <span className="text-[8px] font-black text-red-600 bg-red-50 px-1.5 py-0.5 rounded border border-red-100 uppercase tracking-widest mt-0.5">OOS</span>}
+                                    {/* 🌟 NAYA: Size ke bagal mein current stock dikhayenge */}
+                                    <span className="text-[9px] font-bold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100 tracking-wider">
+                                       Stock: {sizesMeta[size]?.stock || 0}
+                                    </span>
+                                    {isOOS && <span className="text-[8px] font-black text-red-600 bg-red-50 px-1.5 py-0.5 rounded border border-red-100 uppercase tracking-widest">OOS</span>}
                                  </div>
                                  <p className="text-[10px] text-green-600 font-bold flex items-center gap-1">
                                     Final Rate: ₹{finalRate.toFixed(2)} 
@@ -2432,7 +2565,44 @@ const safeUserQuery = userSearchQuery.toLowerCase().trim();
                           }
                       });
                       await supabase.from('order_details').insert(inserts);
-                      
+                      // 🌟 NAYA: DEDUCT STOCK FROM PRODUCTS TABLE (Seller App Order Creation)
+                      const productIdsToUpdate = [...new Set(draftItems.map(item => item.product.id))];
+                      const { data: latestProducts } = await supabase.from('products').select('id, meta').in('id', productIdsToUpdate);
+
+                      if (latestProducts) {
+                        const updatePromises = latestProducts.map(dbProd => {
+                           let metaObj = safeParseJSON(dbProd.meta, {});
+                           let isChanged = false;
+                           
+                           const itemsForThisProduct = draftItems.filter(item => item.product.id === dbProd.id);
+                           
+                           itemsForThisProduct.forEach(item => {
+                              const size = item.size;
+                              const boxSize = safeParseJSON(item.product.meta, {})?.attributes?.box_size?.[0] || 6;
+                              const orderedBoxes = Math.ceil(item.qty / boxSize);
+                              
+                              if (metaObj?.attributes?.available_sizes?.[size]) {
+                                 let currentStock = metaObj.attributes.available_sizes[size].stock || 0;
+                                 let newStock = currentStock - orderedBoxes;
+                                 if (newStock < 0) newStock = 0; 
+                                 metaObj.attributes.available_sizes[size].stock = newStock;
+                                 
+                                 // Agar stock 0 ho jaye toh switch OFF kardo
+                                 if (newStock === 0) {
+                                    metaObj.attributes.available_sizes[size].is_active = false;
+                                 }
+                                 isChanged = true;
+                              }
+                           });
+                           
+                           if (isChanged) {
+                              return supabase.from('products').update({ meta: JSON.stringify(metaObj) }).eq('id', dbProd.id);
+                           }
+                           return null;
+                        }).filter(Boolean);
+                        
+                        if (updatePromises.length > 0) await Promise.all(updatePromises);
+                      }
                       // 🌟 FIX: Order place hone par use strictly 'Buyer' tag assign ho jayega
                       // Supabase queries mein error handle karne ke liye try-catch block use hota hai jo humne pehle hi upar lagaya hua hai
                       await supabase.from('user_base').upsert(
