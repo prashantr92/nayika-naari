@@ -608,12 +608,13 @@ const handleProductToggle = async (product: any) => {
     } catch (e: any) { alert("Error saving: " + e.message); } finally { setIsSavingOrder(false); }
   };
 
-  const handleCategoryChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+ const handleCategoryChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     setUploadForm(prev => ({ ...prev, subcategory: e.target.value }));
     const category = categories.find(c => c.name === e.target.value);
     if (category) {
       const initialSizeConfig: any = {};
-      safeParseJSON(category.sizes, []).forEach((size: string) => { initialSizeConfig[size] = { extra_price: 0, is_active: true }; });
+      // 🌟 FIX: Default stock 0 aur is_active false rahega
+      safeParseJSON(category.sizes, []).forEach((size: string) => { initialSizeConfig[size] = { extra_price: 0, is_active: false, stock: 0 }; });
       setSizeConfig(initialSizeConfig);
     } else setSizeConfig({});
   };
@@ -725,105 +726,262 @@ const handleProductToggle = async (product: any) => {
   const startCopyProduct = (p: any) => { setIsEditMode(false); setEditingProductId(null); setUploadForm({ name: '', subcategory: p.subcategory, mrp: '', cost: '', description: p.description || '', boxSize: safeParseJSON(p.meta, {})?.attributes?.box_size?.[0]?.toString() || '6' }); setSizeConfig(safeParseJSON(p.meta, {})?.attributes?.available_sizes || {}); setExistingImages([]); setUploadImages([]); setUploadImagePreviews([]); setView('upload'); showToast("Details copied."); };
   const openVariantSheet = (p: any) => { setEditingProduct(p); setEditingSizeConfig(safeParseJSON(p.meta, {})?.attributes?.available_sizes || {}); setActiveSheet(true); };
   const saveVariantStatus = async () => { setIsUpdatingVariant(true); try { const meta = safeParseJSON(editingProduct.meta, {}); meta.attributes.available_sizes = editingSizeConfig; await supabase.from('products').update({ meta: JSON.stringify(meta) }).eq('id', editingProduct.id); showToast("Variants Updated!"); setActiveSheet(false); fetchMyProducts(); } catch (e: any) { alert("Failed: " + e.message); } finally { setIsUpdatingVariant(false); } };
-
-  const safeUserQuery = userSearchQuery.toLowerCase().trim();
+const safeUserQuery = userSearchQuery.toLowerCase().trim();
   const safePhoneQuery = safeUserQuery.replace(/\D/g, ''); 
 
-  const filteredUsers = usersList.filter(u => {
-    if (!safeUserQuery) return true;
-    const matchName = u?.name?.toLowerCase().includes(safeUserQuery);
-    const matchCity = u?.city?.toLowerCase().includes(safeUserQuery);
-    const matchPhone = safePhoneQuery && u?.phone?.toString().includes(safePhoneQuery);
-    return matchName || matchCity || matchPhone;
-  });
+  // 🌟 FIX 1: useMemo for filteredUsers
+  const filteredUsers = useMemo(() => {
+    return usersList.filter(u => {
+      if (!safeUserQuery) return true;
+      const matchName = u?.name?.toLowerCase().includes(safeUserQuery);
+      const matchCity = u?.city?.toLowerCase().includes(safeUserQuery);
+      const matchPhone = safePhoneQuery && u?.phone?.toString().includes(safePhoneQuery);
+      return matchName || matchCity || matchPhone;
+    });
+  }, [usersList, safeUserQuery, safePhoneQuery]);
 
-  const displayedUsers = filteredUsers.slice(0, visibleUsersCount);
+  const displayedUsers = useMemo(() => filteredUsers.slice(0, visibleUsersCount), [filteredUsers, visibleUsersCount]);
 
-// 🌟 NAYA: Install Counts & System Tag Calculation
-  const totalLeadsCount = buyersList.length;
-  const installedLeadsCount = buyersList.filter(b => b.appData).length;
+  // 🌟 FIX 2: useMemo for Base Leads
+  const totalLeadsCount = useMemo(() => buyersList.length, [buyersList]);
+  const installedLeadsCount = useMemo(() => buyersList.filter(b => b.appData).length, [buyersList]);
 
-  const processedBuyers = buyersList.map(b => {
-      const isBuyer = b.appData?.orderCount > 0;
-      const isUser = b.appData && !isBuyer;
-      
-      // 🌟 FIX: System tag (Card par dikhane aur system filter ke liye)
-      const sysTag = isBuyer ? 'Buyer' : isUser ? 'User' : 'Pending Install';
-      
-      // 🌟 FIX: CRM tag (Dropdown filter ke liye Latest note se nikalenge)
-      const latestCrmTag = b.notes?.length > 0 ? b.notes[b.notes.length - 1].tag : 'Potential';
-      
-      return { ...b, sysTag, latestCrmTag };
-  }).filter(b => {
-      if (buyerTagFilter !== 'All') {
-         // Agar filter system tag ka hai (Buyer, User, Pending Install)
-         if (['Buyer', 'User', 'Pending Install'].includes(buyerTagFilter)) {
-             if (b.sysTag !== buyerTagFilter) return false;
-         } else {
-             // Agar filter custom CRM tag ka hai (Potential, Not Interested, etc.)
-             if (b.latestCrmTag !== buyerTagFilter) return false;
-         }
-      }
+  const processedBuyers = useMemo(() => {
+      return buyersList.map(b => {
+          const isBuyer = b.appData?.orderCount > 0;
+          const isUser = b.appData && !isBuyer;
+          
+          const sysTag = isBuyer ? 'Buyer' : isUser ? 'User' : 'Pending Install';
+          const latestCrmTag = b.notes?.length > 0 ? b.notes[b.notes.length - 1].tag : 'Potential';
+          
+          return { ...b, sysTag, latestCrmTag };
+      }).filter(b => {
+          if (buyerTagFilter !== 'All') {
+             if (['Buyer', 'User', 'Pending Install'].includes(buyerTagFilter)) {
+                 if (b.sysTag !== buyerTagFilter) return false;
+             } else {
+                 if (b.latestCrmTag !== buyerTagFilter) return false;
+             }
+          }
+          const search = userSearchQuery.toLowerCase();
+          if (search && !b.name?.toLowerCase().includes(search) && !b.phone?.includes(search)) return false;
+          return true;
+      }).sort((a, b) => {
+          if (buyerSort === 'followup') {
+              const getFollowUpDiff = (item: any) => {
+                  const notes = item.notes || [];
+                  if (notes.length === 0) return Number.MAX_SAFE_INTEGER;
+                  const lastDate = notes[notes.length - 1].nextDate;
+                  if (!lastDate) return Number.MAX_SAFE_INTEGER;
+                  
+                  return Math.abs(new Date(lastDate).getTime() - new Date().getTime());
+              };
+              return getFollowUpDiff(a) - getFollowUpDiff(b); 
+          }
 
-      const search = userSearchQuery.toLowerCase();
-      if (search && !b.name?.toLowerCase().includes(search) && !b.phone?.includes(search)) return false;
-      return true;
-}).sort((a, b) => {
-      // 🌟 NAYA: Follow-up date sorting (Aaj ke sabse paas wali date sabse upar)
-      if (buyerSort === 'followup') {
-          const getFollowUpDiff = (item: any) => {
-              const notes = item.notes || [];
-              if (notes.length === 0) return Number.MAX_SAFE_INTEGER; // Agar note nahi hai toh sabse end mein
-              const lastDate = notes[notes.length - 1].nextDate;
-              if (!lastDate) return Number.MAX_SAFE_INTEGER; // Agar Next Date blank hai toh sabse end mein
-              
-              // Aaj ki date se absolute difference nikalna (Jo paas wo upar)
-              return Math.abs(new Date(lastDate).getTime() - new Date().getTime());
+          const getVal = (item: any, type: string) => {
+              if (type === 'cart') return item.appData?.lastCart ? new Date(item.appData.lastCart).getTime() : 0;
+              if (type === 'order') return item.appData?.lastOrder ? new Date(item.appData.lastOrder).getTime() : 0;
+              if (type === 'last_seen') return item.appData?.lastSeen ? new Date(item.appData.lastSeen).getTime() : 0;
+              return new Date(item.created_at).getTime(); 
           };
-          return getFollowUpDiff(a) - getFollowUpDiff(b); // Ascending order
-      }
+          return getVal(b, buyerSort) - getVal(a, buyerSort);
+      });
+  }, [buyersList, buyerTagFilter, userSearchQuery, buyerSort]);
 
-      const getVal = (item: any, type: string) => {
-          if (type === 'cart') return item.appData?.lastCart ? new Date(item.appData.lastCart).getTime() : 0;
-          if (type === 'order') return item.appData?.lastOrder ? new Date(item.appData.lastOrder).getTime() : 0;
-          if (type === 'last_seen') return item.appData?.lastSeen ? new Date(item.appData.lastSeen).getTime() : 0;
-          return new Date(item.created_at).getTime(); 
-      };
-      return getVal(b, buyerSort) - getVal(a, buyerSort);
-  });
+  // 🌟 FIX 3: useMemo + Array Copy ([...]) for App Users
+  const processedAppUsers = useMemo(() => {
+      return [...filteredUsers].sort((a, b) => {
+          if (appUserSort === 'followup') {
+              const getFollowUpDiff = (item: any) => {
+                  const logs = Array.isArray(item.logs) ? item.logs : safeParseJSON(item.logs, []);
+                  const notes = logs.filter((l: any) => l.type === 'note' || l.text);
+                  if (notes.length === 0) return Number.MAX_SAFE_INTEGER;
+                  const lastDate = notes[notes.length - 1].nextDate;
+                  if (!lastDate) return Number.MAX_SAFE_INTEGER;
+                  
+                  return Math.abs(new Date(lastDate).getTime() - new Date().getTime());
+              };
+              return getFollowUpDiff(a) - getFollowUpDiff(b);
+          }
 
-
-
-// 🌟 FIX: Apply sorting to App Users (First Tab Only) with Logs logic
-  const processedAppUsers = filteredUsers.sort((a, b) => {
-      if (appUserSort === 'followup') {
-          const getFollowUpDiff = (item: any) => {
-              const logs = Array.isArray(item.logs) ? item.logs : safeParseJSON(item.logs, []);
-              const notes = logs.filter((l: any) => l.type === 'note' || l.text);
-              if (notes.length === 0) return Number.MAX_SAFE_INTEGER;
-              const lastDate = notes[notes.length - 1].nextDate;
-              if (!lastDate) return Number.MAX_SAFE_INTEGER;
-              
-              return Math.abs(new Date(lastDate).getTime() - new Date().getTime());
+          const getVal = (item: any, type: string) => {
+              if (type === 'cart') return item.lastCart ? new Date(item.lastCart).getTime() : 0;
+              if (type === 'order') return item.lastOrder ? new Date(item.lastOrder).getTime() : 0;
+              if (type === 'last_seen') return item.lastSeen ? new Date(item.lastSeen).getTime() : 0;
+              return new Date(item.created_at).getTime();
           };
-          return getFollowUpDiff(a) - getFollowUpDiff(b);
-      }
+          return getVal(b, appUserSort) - getVal(a, appUserSort);
+      }).slice(0, visibleUsersCount);
+  }, [filteredUsers, appUserSort, visibleUsersCount]);
 
-      const getVal = (item: any, type: string) => {
-          if (type === 'cart') return item.lastCart ? new Date(item.lastCart).getTime() : 0;
-          if (type === 'order') return item.lastOrder ? new Date(item.lastOrder).getTime() : 0;
-          if (type === 'last_seen') return item.lastSeen ? new Date(item.lastSeen).getTime() : 0;
-          return new Date(item.created_at).getTime();
-      };
-      return getVal(b, appUserSort) - getVal(a, appUserSort);
-  }).slice(0, visibleUsersCount);
+// 🌟 FINAL PERFORMANCE FIX: UI DOM MEMOIZATION (Lock the Cards)
+  // Ye React ko strict order dega ki type karte waqt cards ko dobara draw nahi karna hai
+  const RenderedAppUsersList = useMemo(() => {
+    if (processedAppUsers.length === 0) {
+      return <div className="text-center py-20 text-gray-400 font-medium text-sm bg-white rounded-2xl border border-gray-200 shadow-sm mx-1 flex flex-col items-center"><Users size={40} className="mb-2 opacity-20"/><p>No users found.</p></div>;
+    }
+    return processedAppUsers.map((u, index) => {
+      const userLogs = Array.isArray(u.logs) ? u.logs : safeParseJSON(u.logs, []);
+      const userNotes = userLogs.filter((l: any) => l.type === 'note' || l.text);
+      const lastNote = userNotes.length > 0 ? userNotes[userNotes.length - 1] : null;
+
+      return (
+        <div key={u.id || index} className="bg-white rounded-2xl p-4 border border-gray-200 shadow-sm transition-transform">
+          <div className="flex justify-between items-start mb-4">
+            <div className="flex items-center gap-2">
+              <div className="w-10 h-10 bg-blue-100 text-blue-700 font-black rounded-full flex items-center justify-center text-lg uppercase shrink-0">{u.name ? u.name.charAt(0) : 'U'}</div>
+              <div>
+                <h3 className="font-black text-gray-900 text-[15px] flex items-center gap-1">
+                   <span className="truncate max-w-[110px]">{u.name}</span>
+                   <span className="text-[10px] text-green-600 bg-[#E5F7ED] px-1.5 py-0.5 rounded ml-0.5">-{u.discount_percent || 0}%</span>
+                </h3>
+                <p className="text-[10px] font-bold text-gray-500 mt-0.5 flex items-center gap-0.5"><MapPin size={10} className="shrink-0"/> <span className="truncate max-w-[130px]">{u.city || 'N/A'}, {u.state || 'N/A'}</span></p>
+              </div>
+            </div>
+            
+            <div className="flex items-center gap-1.5 shrink-0">
+              {isAdmin && u.password && (
+                 <div onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(u.password); showToast("Password Copied! 🔐"); }} className="flex items-center gap-1.5 bg-[#FFF0F0] px-2 py-1.5 rounded-lg border border-[#FFE4EB] cursor-pointer active:scale-95 transition-transform h-8">
+                    <Lock size={12} className="text-[#FF3F6C]" />
+                    <span className="text-[10px] font-bold text-gray-700"></span>
+                    <Copy size={12} className="text-[#FF3F6C]" />
+                 </div>
+              )}
+              <a href={`tel:+91${u.phone}`} className="w-8 h-8 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center active:scale-95 transition-transform shrink-0"><Phone size={14}/></a>
+              <a href={getWhatsAppLink(`91${u.phone}`)} target="_blank" rel="noreferrer" className="w-8 h-8 rounded-lg bg-[#E5F7ED] text-[#008A00] flex items-center justify-center active:scale-95 transition-transform shrink-0"><MessageCircle size={14}/></a>
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-2 bg-gray-50 p-2 rounded-lg text-center mb-3">
+             <div onClick={() => { if(u.orderCount > 0) { setSearchQuery(u.name); setView('orders'); } }} className={`bg-white border border-gray-200 rounded py-2 shadow-sm ${u.orderCount > 0 ? 'cursor-pointer active:scale-95' : ''}`}>
+                <p className={`text-sm font-black ${u.orderCount > 0 ? 'text-blue-600' : 'text-gray-900'}`}>{u.orderCount}</p><p className="text-[9px] font-bold text-gray-500 uppercase tracking-widest mt-0.5">Orders</p>
+             </div>
+             <div onClick={() => { if(u.uCart?.length > 0) { setViewingUserCart(u.uCart); setIsCartSheetOpen(true); } else showToast("Cart is empty"); }} className="bg-white border border-gray-200 rounded py-2 shadow-sm cursor-pointer active:scale-95">
+                <p className="text-sm font-black text-blue-600">{u.cartBoxes}B / {u.cartPcs}P</p><p className="text-[9px] font-bold text-gray-500 uppercase tracking-widest mt-0.5">Cart Qty</p>
+             </div>
+             <div className="bg-white border border-gray-200 rounded py-2 shadow-sm"><p className="text-sm font-black text-gray-900">{u.cartUnique}</p><p className="text-[9px] font-bold text-gray-500 uppercase tracking-widest mt-0.5">Unique Items</p></div>
+          </div>
+
+          <div className="flex items-center justify-between mb-3">
+             <div className="flex items-center gap-2 overflow-hidden flex-1">
+                <span className="text-[10px] font-bold text-gray-400 shrink-0 uppercase tracking-widest">{lastNote ? safeFormatDate(lastNote.date).split(',')[0] : 'NO NOTES'} <span className="text-gray-300 ml-1">•</span></span>
+                {lastNote ? (
+                   <span className="text-[11px] font-semibold text-gray-800 italic truncate bg-orange-50 px-2 py-0.5 rounded-md border border-orange-100">"{lastNote.text}"</span>
+                ) : (
+                   <span className="text-[11px] font-semibold text-gray-400 italic bg-gray-50 px-2 py-0.5 rounded-md">No notes added</span>
+                )}
+             </div>
+             <div className="flex items-center gap-2.5 shrink-0 ml-2">
+                <button onClick={() => { setSelectedBuyerForNote({...u, isAppUser: true}); setNoteForm({ text: '', nextDate: '', tag: lastNote?.tag || 'Potential' }); setIsNoteSheetOpen(true); }} className="text-[12px] font-black text-blue-600 hover:underline">+Add</button>
+                <button onClick={() => { setViewingNotesUser({...u, isAppUser: true, notes: userNotes}); setIsViewNotesOpen(true); }} className="text-[12px] font-black text-blue-600 hover:underline">View</button>
+             </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2 pt-3 border-t border-gray-100">
+             <div className="flex flex-col text-center"><span className="text-[8px] font-bold text-gray-400 uppercase tracking-tighter">Last Seen</span><span className="text-[10px] font-bold text-gray-700 leading-tight mt-0.5">{safeFormatDate(u.lastSeen)}</span></div>
+             <div className="flex flex-col text-center border-x border-gray-100"><span className="text-[8px] font-bold text-gray-400 uppercase tracking-tighter">Last Cart</span><span className="text-[10px] font-bold text-gray-700 leading-tight mt-0.5">{safeFormatDate(u.lastCart)}</span></div>
+             <div className="flex flex-col text-center"><span className="text-[8px] font-bold text-gray-400 uppercase tracking-tighter">Last Order</span><span className="text-[10px] font-bold text-gray-700 leading-tight mt-0.5">{safeFormatDate(u.lastOrder)}</span></div>
+          </div>
+        </div>
+      );
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [processedAppUsers, isAdmin]);
+
+  const RenderedBuyersList = useMemo(() => {
+    if (processedBuyers.length === 0) {
+      return <div className="text-center py-20 text-gray-400 font-medium text-sm bg-white rounded-2xl border border-gray-200 shadow-sm mx-1 flex flex-col items-center"><Users size={40} className="mb-2 opacity-20"/><p>No leads found.</p></div>;
+    }
+    return processedBuyers.map((b, index) => {
+      const lastNote = b.notes?.length > 0 ? b.notes[b.notes.length - 1] : null;
+      return (
+        <div key={b.id || index} className="bg-white rounded-[20px] p-4 border border-gray-200 shadow-sm transition-transform mb-2">
+          <div className="flex justify-between items-start mb-4">
+            <div>
+              <h3 className="font-black text-gray-900 text-[16px]">{b.name || 'Unknown'}</h3>
+              <p className="text-[12px] font-semibold text-gray-500 mt-0.5">{b.phone}</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-black uppercase tracking-widest px-2.5 py-1 rounded-md shrink-0 border border-gray-200 text-gray-600 bg-gray-50">
+                {b.sysTag}
+              </span>
+              <a href={`tel:+91${b.phone}`} className="w-8 h-8 rounded-lg border border-blue-100 bg-blue-50/50 text-blue-500 flex items-center justify-center active:scale-95"><Phone size={14}/></a>
+              <a href={getWhatsAppLink(`91${b.phone}`)} target="_blank" rel="noreferrer" className="w-8 h-8 rounded-lg border border-green-100 bg-green-50/50 text-green-500 flex items-center justify-center active:scale-95"><MessageCircle size={14}/></a>
+            </div>
+          </div>
+
+          <div className="flex gap-3 items-center mb-4">
+            <div className="flex-1 bg-[#F8F9FA] rounded-xl border border-gray-100 p-4 min-h-[64px] flex flex-col items-center justify-center text-center relative overflow-hidden">
+               {lastNote ? (
+                   <>
+                      <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest mb-1.5 flex items-center gap-1.5">{safeFormatDate(lastNote.date).split(',')[0]} <span className="w-1 h-1 rounded-full bg-gray-300"></span> <span className={`px-1.5 py-0.5 rounded border ${lastNote.tag === 'Potential' ? 'bg-blue-50 text-blue-600 border-blue-100' : lastNote.tag === 'Quality Issue' ? 'bg-orange-50 text-orange-600 border-orange-100' : lastNote.tag === 'Not Interested' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-gray-100 text-gray-600 border-gray-200'}`}>{lastNote.tag || 'Potential'}</span></p>
+                      <p className="text-[12px] font-semibold text-gray-700 italic leading-snug">"{lastNote.text}"</p>
+                   </>
+               ) : (
+                   <p className="text-[12px] font-semibold text-gray-400">No follow-up notes yet.</p>
+               )}
+            </div>
+            <div className="flex flex-col gap-2 shrink-0 pr-1">
+               <button onClick={() => { setSelectedBuyerForNote(b); setNoteForm({ text: '', nextDate: '', tag: b.latestCrmTag }); setIsNoteSheetOpen(true); }} className="text-[12px] font-bold text-blue-700 underline underline-offset-2 decoration-blue-200 hover:decoration-blue-700">+Add Notes</button>
+               <button onClick={() => { setViewingNotesUser(b); setIsViewNotesOpen(true); }} className="text-[12px] font-bold text-blue-700 underline underline-offset-2 decoration-blue-200 hover:decoration-blue-700">View Notes</button>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-5">
+            <div className="flex items-center gap-1.5"><span className="text-[9px] font-black text-gray-400 uppercase tracking-widest">LAST SEEN</span> <span className="text-[10px] font-bold text-gray-800">{b.appData?.lastSeen ? safeFormatDate(b.appData.lastSeen) : '-'}</span></div>
+            <div className="flex items-center gap-1.5"><span className="text-[9px] font-black text-gray-400 uppercase tracking-widest">LAST ORDER</span> <span className="text-[10px] font-bold text-gray-800">{b.appData?.lastOrder ? safeFormatDate(b.appData.lastOrder) : '-'}</span></div>
+          </div>
+        </div>
+      );
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [processedBuyers]);
 
   const filteredProducts = myProducts.filter(p => {
     const search = p?.name?.toLowerCase().includes(searchQuery.toLowerCase()) || p?.subcategory?.toLowerCase().includes(searchQuery.toLowerCase());
-    const sizes = safeParseJSON(p.meta, {})?.attributes?.available_sizes || {}; const keys = Object.keys(sizes);
+    const sizes = safeParseJSON(p.meta, {})?.attributes?.available_sizes || {}; 
+    const keys = Object.keys(sizes);
+    
     let status = 'Inactive';
-    if (keys.length > 0) { const active = keys.filter(k => sizes[k].is_active !== false).length; status = active === keys.length ? 'Active' : active === 0 ? 'Inactive' : 'Partial'; }
-    return search && (productFilter === 'All' || status === productFilter);
+    let lowStockCount = 0;
+    let inactiveCount = 0; // 🌟 NAYA: Partial tab ki sorting ke liye
+
+    if (keys.length > 0) { 
+      const active = keys.filter(k => sizes[k].is_active !== false).length; 
+      status = active === keys.length ? 'Active' : active === 0 ? 'Inactive' : 'Partial'; 
+      
+      for (let k of keys) {
+        const stock = sizes[k].stock || 0;
+        const isActive = sizes[k].is_active !== false;
+
+        // Low stock count (1 se 3 box)
+        if (stock > 0 && stock <= 3) {
+          lowStockCount++; 
+        }
+        // Inactive ya 0 stock count
+        if (!isActive || stock === 0) {
+          inactiveCount++;
+        }
+      }
+    }
+    
+    p._lowStockCount = lowStockCount; 
+    p._inactiveCount = inactiveCount;
+
+    if (!search) return false;
+    if (productFilter === 'All') return true;
+    if (productFilter === 'Low Stock') return lowStockCount > 0;
+    return status === productFilter;
+  }).sort((a, b) => {
+     // 🌟 NAYA: Low Stock sorting (Sabse zyada low stock sizes wale upar)
+     if (productFilter === 'Low Stock') {
+         return (b._lowStockCount || 0) - (a._lowStockCount || 0);
+     }
+     // 🌟 NAYA: Partial sorting (Sabse zyada inactive/0 stock sizes wale upar)
+     if (productFilter === 'Partial') {
+         return (b._inactiveCount || 0) - (a._inactiveCount || 0);
+     }
+     return 0; 
   });
   
   const filteredOrders = orders.filter(o => {
@@ -992,136 +1150,24 @@ const handleProductToggle = async (product: any) => {
               </div>
             </div>
 
+           {/* 🌟 YE DIV REPLACE KARNA HAI */}
             <div className="p-3 flex flex-col gap-3 pb-24">
               {loading ? ( <div className="flex justify-center py-20"><Loader2 className="animate-spin text-gray-400" size={32} /></div> ) : 
               
               userTab === 'app_users' ? (
                 /* --- APP USERS LIST --- */
-                processedAppUsers.length === 0 ? ( <div className="text-center py-20 text-gray-400 font-medium text-sm bg-white rounded-2xl border border-gray-200 shadow-sm mx-1 flex flex-col items-center"><Users size={40} className="mb-2 opacity-20"/><p>No users found.</p></div> ) : (
                 <>
-                {processedAppUsers.map((u, index) => {
-                  // 🌟 FIX: Ab notes directly naye 'logs' column se aayenge
-                  const userLogs = Array.isArray(u.logs) ? u.logs : safeParseJSON(u.logs, []);
-                  // Sirf notes wale logs nikal rahe hain
-                  const userNotes = userLogs.filter((l: any) => l.type === 'note' || l.text);
-                  const lastNote = userNotes.length > 0 ? userNotes[userNotes.length - 1] : null;
-
-                  return (
-                  <div key={u.id || index} className="bg-white rounded-2xl p-4 border border-gray-200 shadow-sm transition-transform">
-                    {/* 🌟 FIX: Top Header exactly as per Screenshot with inline Password CTA */}
-                    <div className="flex justify-between items-start mb-4">
-                      <div className="flex items-center gap-2">
-                        <div className="w-10 h-10 bg-blue-100 text-blue-700 font-black rounded-full flex items-center justify-center text-lg uppercase shrink-0">{u.name ? u.name.charAt(0) : 'U'}</div>
-                        <div>
-                          <h3 className="font-black text-gray-900 text-[15px] flex items-center gap-1">
-                             <span className="truncate max-w-[110px]">{u.name}</span>
-                             <span className="text-[10px] text-green-600 bg-[#E5F7ED] px-1.5 py-0.5 rounded ml-0.5">-{u.discount_percent || 0}%</span>
-                          </h3>
-                          <p className="text-[10px] font-bold text-gray-500 mt-0.5 flex items-center gap-0.5"><MapPin size={10} className="shrink-0"/> <span className="truncate max-w-[130px]">{u.city || 'N/A'}, {u.state || 'N/A'}</span></p>
-                        </div>
-                      </div>
-                      
-                      {/* Right Side Actions */}
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        {isAdmin && u.password && (
-                           <div onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(u.password); showToast("Password Copied! 🔐"); }} className="flex items-center gap-1.5 bg-[#FFF0F0] px-2 py-1.5 rounded-lg border border-[#FFE4EB] cursor-pointer active:scale-95 transition-transform h-8">
-                              <Lock size={12} className="text-[#FF3F6C]" />
-                              <span className="text-[10px] font-bold text-gray-700"></span>
-                              <Copy size={12} className="text-[#FF3F6C]" />
-                           </div>
-                        )}
-                        <a href={`tel:+91${u.phone}`} className="w-8 h-8 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center active:scale-95 transition-transform shrink-0"><Phone size={14}/></a>
-                        <a href={getWhatsAppLink(`91${u.phone}`)} target="_blank" rel="noreferrer" className="w-8 h-8 rounded-lg bg-[#E5F7ED] text-[#008A00] flex items-center justify-center active:scale-95 transition-transform shrink-0"><MessageCircle size={14}/></a>
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-3 gap-2 bg-gray-50 p-2 rounded-lg text-center mb-3">
-                       <div onClick={() => { if(u.orderCount > 0) { setSearchQuery(u.name); setView('orders'); } }} className={`bg-white border border-gray-200 rounded py-2 shadow-sm ${u.orderCount > 0 ? 'cursor-pointer active:scale-95' : ''}`}>
-                          <p className={`text-sm font-black ${u.orderCount > 0 ? 'text-blue-600' : 'text-gray-900'}`}>{u.orderCount}</p><p className="text-[9px] font-bold text-gray-500 uppercase tracking-widest mt-0.5">Orders</p>
-                       </div>
-                       <div onClick={() => { if(u.uCart?.length > 0) { setViewingUserCart(u.uCart); setIsCartSheetOpen(true); } else showToast("Cart is empty"); }} className="bg-white border border-gray-200 rounded py-2 shadow-sm cursor-pointer active:scale-95">
-                          <p className="text-sm font-black text-blue-600">{u.cartBoxes}B / {u.cartPcs}P</p><p className="text-[9px] font-bold text-gray-500 uppercase tracking-widest mt-0.5">Cart Qty</p>
-                       </div>
-                       <div className="bg-white border border-gray-200 rounded py-2 shadow-sm"><p className="text-sm font-black text-gray-900">{u.cartUnique}</p><p className="text-[9px] font-bold text-gray-500 uppercase tracking-widest mt-0.5">Unique Items</p></div>
-                    </div>
-
-                    {/* 🌟 NAYA: Followup Notes Row exact jaisa design manga tha */}
-                    <div className="flex items-center justify-between mb-3">
-                       <div className="flex items-center gap-2 overflow-hidden flex-1">
-                          <span className="text-[10px] font-bold text-gray-400 shrink-0 uppercase tracking-widest">{lastNote ? safeFormatDate(lastNote.date).split(',')[0] : 'NO NOTES'} <span className="text-gray-300 ml-1">•</span></span>
-                          {lastNote ? (
-                             <span className="text-[11px] font-semibold text-gray-800 italic truncate bg-orange-50 px-2 py-0.5 rounded-md border border-orange-100">"{lastNote.text}"</span>
-                          ) : (
-                             <span className="text-[11px] font-semibold text-gray-400 italic bg-gray-50 px-2 py-0.5 rounded-md">No notes added</span>
-                          )}
-                       </div>
-                       <div className="flex items-center gap-2.5 shrink-0 ml-2">
-                          {/* 🌟 FIX: Tag ab lastNote se read hoga */}
-<button onClick={() => { setSelectedBuyerForNote({...u, isAppUser: true}); setNoteForm({ text: '', nextDate: '', tag: lastNote?.tag || 'Potential' }); setIsNoteSheetOpen(true); }} className="text-[12px] font-black text-blue-600 hover:underline">+Add</button>
-                          <button onClick={() => { setViewingNotesUser({...u, isAppUser: true, notes: userNotes}); setIsViewNotesOpen(true); }} className="text-[12px] font-black text-blue-600 hover:underline">View</button>
-                       </div>
-                    </div>
-
-                    <div className="grid grid-cols-3 gap-2 pt-3 border-t border-gray-100">
-                       <div className="flex flex-col text-center"><span className="text-[8px] font-bold text-gray-400 uppercase tracking-tighter">Last Seen</span><span className="text-[10px] font-bold text-gray-700 leading-tight mt-0.5">{safeFormatDate(u.lastSeen)}</span></div>
-                       <div className="flex flex-col text-center border-x border-gray-100"><span className="text-[8px] font-bold text-gray-400 uppercase tracking-tighter">Last Cart</span><span className="text-[10px] font-bold text-gray-700 leading-tight mt-0.5">{safeFormatDate(u.lastCart)}</span></div>
-                       <div className="flex flex-col text-center"><span className="text-[8px] font-bold text-gray-400 uppercase tracking-tighter">Last Order</span><span className="text-[10px] font-bold text-gray-700 leading-tight mt-0.5">{safeFormatDate(u.lastOrder)}</span></div>
-                    </div>
-                  </div>
-                )})}
-                {filteredUsers.length > visibleUsersCount && (
-                  <button onClick={() => setVisibleUsersCount(prev => prev + 20)} className="w-full py-4 bg-white border border-gray-200 text-blue-600 font-bold text-sm rounded-xl shadow-sm active:scale-95">Load More Users</button>
-                )}
+                  {RenderedAppUsersList}
+                  {filteredUsers.length > visibleUsersCount && (
+                    <button onClick={() => setVisibleUsersCount(prev => prev + 20)} className="w-full py-4 bg-white border border-gray-200 text-blue-600 font-bold text-sm rounded-xl shadow-sm active:scale-95">Load More Users</button>
+                  )}
                 </>
-              )
-            ) : (
-/* --- BUYERS & CRM LIST --- */
-              processedBuyers.length === 0 ? ( <div className="text-center py-20 text-gray-400 font-medium text-sm bg-white rounded-2xl border border-gray-200 shadow-sm mx-1 flex flex-col items-center"><Users size={40} className="mb-2 opacity-20"/><p>No leads found.</p></div> ) : (
+              ) : (
+                /* --- BUYERS & CRM LIST --- */
                 <>
-                {processedBuyers.map((b, index) => {
-                  const lastNote = b.notes?.length > 0 ? b.notes[b.notes.length - 1] : null;
-                  
-                  return (
-                  <div key={b.id || index} className="bg-white rounded-[20px] p-4 border border-gray-200 shadow-sm transition-transform mb-2">
-                    <div className="flex justify-between items-start mb-4">
-                      <div>
-                        <h3 className="font-black text-gray-900 text-[16px]">{b.name || 'Unknown'}</h3>
-                        <p className="text-[12px] font-semibold text-gray-500 mt-0.5">{b.phone}</p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] font-black uppercase tracking-widest px-2.5 py-1 rounded-md shrink-0 border border-gray-200 text-gray-600 bg-gray-50">
-                          {b.sysTag}
-                        </span>
-                        <a href={`tel:+91${b.phone}`} className="w-8 h-8 rounded-lg border border-blue-100 bg-blue-50/50 text-blue-500 flex items-center justify-center active:scale-95"><Phone size={14}/></a>
-                        <a href={getWhatsAppLink(`91${b.phone}`)} target="_blank" rel="noreferrer" className="w-8 h-8 rounded-lg border border-green-100 bg-green-50/50 text-green-500 flex items-center justify-center active:scale-95"><MessageCircle size={14}/></a>
-                      </div>
-                    </div>
-
-                    <div className="flex gap-3 items-center mb-4">
-                      <div className="flex-1 bg-[#F8F9FA] rounded-xl border border-gray-100 p-4 min-h-[64px] flex flex-col items-center justify-center text-center relative overflow-hidden">
-                         {lastNote ? (
-                             <>
-                                <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest mb-1.5 flex items-center gap-1.5">{safeFormatDate(lastNote.date).split(',')[0]} <span className="w-1 h-1 rounded-full bg-gray-300"></span> <span className={`px-1.5 py-0.5 rounded border ${lastNote.tag === 'Potential' ? 'bg-blue-50 text-blue-600 border-blue-100' : lastNote.tag === 'Quality Issue' ? 'bg-orange-50 text-orange-600 border-orange-100' : lastNote.tag === 'Not Interested' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-gray-100 text-gray-600 border-gray-200'}`}>{lastNote.tag || 'Potential'}</span></p>
-                                <p className="text-[12px] font-semibold text-gray-700 italic leading-snug">"{lastNote.text}"</p>
-                             </>
-                         ) : (
-                             <p className="text-[12px] font-semibold text-gray-400">No follow-up notes yet.</p>
-                         )}
-                      </div>
-                      <div className="flex flex-col gap-2 shrink-0 pr-1">
-                         <button onClick={() => { setSelectedBuyerForNote(b); setNoteForm({ text: '', nextDate: '', tag: b.latestCrmTag }); setIsNoteSheetOpen(true); }} className="text-[12px] font-bold text-blue-700 underline underline-offset-2 decoration-blue-200 hover:decoration-blue-700">+Add Notes</button>
-                         <button onClick={() => { setViewingNotesUser(b); setIsViewNotesOpen(true); }} className="text-[12px] font-bold text-blue-700 underline underline-offset-2 decoration-blue-200 hover:decoration-blue-700">View Notes</button>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-5">
-                      <div className="flex items-center gap-1.5"><span className="text-[9px] font-black text-gray-400 uppercase tracking-widest">LAST SEEN</span> <span className="text-[10px] font-bold text-gray-800">{b.appData?.lastSeen ? safeFormatDate(b.appData.lastSeen) : '-'}</span></div>
-                      <div className="flex items-center gap-1.5"><span className="text-[9px] font-black text-gray-400 uppercase tracking-widest">LAST ORDER</span> <span className="text-[10px] font-bold text-gray-800">{b.appData?.lastOrder ? safeFormatDate(b.appData.lastOrder) : '-'}</span></div>
-                    </div>
-                  </div>
-                )})}
+                  {RenderedBuyersList}
                 </>
-              )
-            )}
+              )}
             </div>
           </div>
         )}
@@ -1141,9 +1187,53 @@ const handleProductToggle = async (product: any) => {
                 <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
                   <label className="text-[11px] font-bold text-gray-600 uppercase tracking-wider mb-3 block border-b border-gray-200 pb-2">Size Configuration</label>
                   <div className="space-y-3">
-                    {Object.keys(sizeConfig).map((size) => (
-                        <div key={size} className="flex items-center justify-between"><div className="font-black text-gray-800 w-12">{size}</div><div className="flex items-center gap-2 flex-1"><span className="text-xs font-bold text-gray-400">+ ₹</span><input type="number" value={sizeConfig[size].extra_price || ''} onChange={(e) => setSizeConfig(prev => ({...prev, [size]: {...prev[size], extra_price: parseInt(e.target.value) || 0}}))} className="w-full max-w-[100px] bg-white border border-gray-200 rounded-lg px-3 py-1.5 text-sm font-bold text-gray-800" /></div><button onClick={() => setSizeConfig(prev => ({...prev, [size]: {...prev[size], is_active: !(prev[size].is_active !== false)}}))} className="text-gray-500 transition-colors">{(sizeConfig[size].is_active !== false) ? <ToggleRight size={28} className="text-green-500" /> : <ToggleLeft size={28} />}</button></div>
-                    ))}
+                    {Object.keys(sizeConfig).map((size) => {
+                      const currentConfig = sizeConfig[size];
+                      const stockVal = currentConfig.stock || 0;
+                      const isActive = currentConfig.is_active !== false;
+
+                      return (
+                        <div key={size} className="flex items-center justify-between bg-white p-2 rounded-xl border border-gray-200 shadow-sm">
+                          <div className="font-black text-gray-800 w-10 text-center">{size}</div>
+                          
+                          <div className="flex items-center gap-1 flex-1 border-l pl-2 border-gray-100">
+                            <span className="text-[10px] font-bold text-gray-400">+ ₹</span>
+                            <input type="number" value={currentConfig.extra_price || ''} onChange={(e) => setSizeConfig(prev => ({...prev, [size]: {...prev[size], extra_price: parseInt(e.target.value) || 0}}))} className="w-full max-w-[60px] bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-bold text-gray-800 outline-none" placeholder="0" />
+                          </div>
+                          
+                          <div className="flex items-center gap-1.5 mr-3 border-l pl-2 border-gray-100">
+                            <span className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">Stock:</span>
+                            <input type="number" min="0" value={stockVal === 0 ? '' : stockVal} 
+                              onChange={(e) => {
+                                const num = e.target.value === '' ? 0 : parseInt(e.target.value);
+                                if (num < 0) return;
+                                // 🌟 Rule: auto-ON if >0, auto-OFF if 0
+                                setSizeConfig(prev => ({...prev, [size]: {...prev[size], stock: num, is_active: num > 0}}));
+                              }}
+                              className="w-[50px] bg-blue-50 border border-blue-200 text-blue-700 rounded-lg px-2 py-1.5 text-xs font-black outline-none focus:border-blue-500 text-center" placeholder="0" 
+                            />
+                          </div>
+
+                          <button onClick={() => {
+                            if (!isActive && (!stockVal || stockVal <= 0)) {
+                              showToast("Please enter stock first! 📦");
+                              return;
+                            }
+                            setSizeConfig(prev => ({
+                               ...prev, 
+                               [size]: {
+                                  ...prev[size], 
+                                  is_active: !isActive,
+                                  // 🌟 NAYA: Agar OFF kar rahe hain, toh stock 0 kar do
+                                  stock: isActive ? 0 : prev[size].stock 
+                               }
+                            }));
+                          }} className="text-gray-500 transition-colors pr-1">
+                            {isActive ? <ToggleRight size={32} className="text-green-500" /> : <ToggleLeft size={32} />}
+                          </button>
+                        </div>
+                      )
+                    })}
                   </div>
                 </div>
               )}
@@ -1175,7 +1265,7 @@ const handleProductToggle = async (product: any) => {
                 </div>
               </div>
               <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-1">
-                {['All', 'Active', 'Partial', 'Inactive'].map(status => (
+               {['All', 'Active', 'Partial', 'Low Stock', 'Inactive'].map(status => (
                   <button key={status} onClick={() => setProductFilter(status)} className={`px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest shrink-0 ${productFilter === status ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-500'}`}>{status}</button>
                 ))}
               </div>
@@ -1700,15 +1790,18 @@ const handleProductToggle = async (product: any) => {
                          setUsersList(prev => prev.map(u => u.id === selectedBuyerForNote.id ? { ...u, logs: updatedLogs, latestCrmTag: noteForm.tag } : u));
                      } 
                      // 🌟 SECOND TAB (BASE LEADS): Purana logic, isko bilkul nahi chheda!
+                     // 🌟 SECOND TAB (BASE LEADS): Purana logic, isko bilkul nahi chheda!
                      else {
                          const newNote = { date: getLocalTimestamp(), text: noteForm.text, nextDate: noteForm.nextDate, tag: noteForm.tag };
                          
-                         const updatedNotes = [...(selectedBuyerForNote.followupNotes || selectedBuyerForNote.notes || []), newNote];
+                         // Hum 'selectedBuyerForNote.notes' array use karenge kyunki fetch karte time humne usime map kiya tha
+                         const updatedNotes = [...(selectedBuyerForNote.notes || []), newNote];
                          
-                         const { error } = await supabase.from('user_base').update({ followupNotes: updatedNotes, tag: selectedBuyerForNote.sysTag }).eq('phone', selectedBuyerForNote.phone);
+                         // ✅ FIX: followupnotes ko sab small case kar diya
+                         const { error } = await supabase.from('user_base').update({ followupnotes: updatedNotes, tag: selectedBuyerForNote.sysTag }).eq('phone', selectedBuyerForNote.phone);
                          if(error) throw error;
                          
-                         setBuyersList(prev => prev.map(b => String(b.phone) === String(selectedBuyerForNote.phone) ? { ...b, followupNotes: updatedNotes, notes: updatedNotes, latestCrmTag: noteForm.tag } : b));
+                         setBuyersList(prev => prev.map(b => String(b.phone) === String(selectedBuyerForNote.phone) ? { ...b, followupnotes: updatedNotes, notes: updatedNotes, latestCrmTag: noteForm.tag } : b));
                      }
                      
                      setIsNoteSheetOpen(false); 
@@ -2227,18 +2320,26 @@ const handleProductToggle = async (product: any) => {
                         {Object.keys(addSizeConfig).map(size => {
                           const finalRate = calculateFinalRate(selectedProductForAdd, size, targetUser);
                           const isAlreadyAdded = existingSizes.has(size);
+                          
+                          // Check karo ki size active hai ya nahi
+                          const sizesMeta = safeParseJSON(selectedProductForAdd.meta, {})?.attributes?.available_sizes || {};
+                          const isOOS = sizesMeta[size]?.is_active === false;
 
                           return (
                             <div key={size} className={`flex justify-between items-center py-3 border-b border-gray-100 last:border-0 ${isAlreadyAdded ? 'opacity-60 bg-gray-50 px-2 rounded-lg' : ''}`}>
                               <div>
-                                 <p className="font-black text-gray-900 text-base">{size}</p>
+                                 {/* 🌟 FIX: Size ke naam ke bagal mein OOS badge lagaya */}
+                                 <div className="flex items-center gap-2">
+                                    <p className="font-black text-gray-900 text-base">{size}</p>
+                                    {isOOS && <span className="text-[8px] font-black text-red-600 bg-red-50 px-1.5 py-0.5 rounded border border-red-100 uppercase tracking-widest mt-0.5">OOS</span>}
+                                 </div>
                                  <p className="text-[10px] text-green-600 font-bold flex items-center gap-1">
                                     Final Rate: ₹{finalRate.toFixed(2)} 
                                     <span className="text-[9px] text-gray-400 line-through">₹{selectedProductForAdd.mrp}</span>
                                  </p>
                               </div>
                               <div className="flex items-center gap-3">
-                                {/* 🌟 FIX: Agar pehle se added hai toh '+' '-' button gayab karke badge dikhao */}
+                                {/* 🌟 FIX: + aur - ke buttons hamesha dikhenge chahe OOS ho */}
                                 {isAlreadyAdded ? (
                                     <span className="text-[9px] font-black text-blue-600 bg-blue-50 px-2 py-1 rounded border border-blue-100 uppercase tracking-widest">Already Added</span>
                                 ) : (
@@ -2446,18 +2547,52 @@ const handleProductToggle = async (product: any) => {
                   <p className="text-sm text-gray-500 text-center py-4">No sizes found.</p>
                ) : (
                   <div className="space-y-3">
-                    {Object.keys(editingSizeConfig).map((size) => (
-                        <div key={size} className="flex items-center justify-between bg-gray-50 p-3 rounded-xl border border-gray-200">
-                           <div className="font-black text-gray-800 w-12">{size}</div>
-                           <div className="flex items-center gap-2 flex-1">
-                             <span className="text-xs font-bold text-gray-400">+ ₹</span>
-                             <input type="number" value={editingSizeConfig[size].extra_price || ''} onChange={(e) => setEditingSizeConfig(prev => ({...prev, [size]: {...prev[size], extra_price: parseInt(e.target.value) || 0}}))} className="w-full max-w-[100px] bg-white border border-gray-300 rounded-lg px-3 py-1.5 text-sm font-bold text-gray-800 outline-none focus:border-blue-500" />
+                    {Object.keys(editingSizeConfig).map((size) => {
+                      const currentConfig = editingSizeConfig[size];
+                      const stockVal = currentConfig.stock || 0;
+                      const isActive = currentConfig.is_active !== false;
+
+                      return (
+                        <div key={size} className="flex items-center justify-between bg-white p-2.5 rounded-xl border border-gray-200 shadow-sm">
+                           <div className="font-black text-gray-800 w-12 text-center">{size}</div>
+                           
+                           <div className="flex items-center gap-1 flex-1 border-l pl-3 border-gray-100">
+                             <span className="text-[10px] font-bold text-gray-400">+ ₹</span>
+                             <input type="number" value={currentConfig.extra_price || ''} onChange={(e) => setEditingSizeConfig(prev => ({...prev, [size]: {...prev[size], extra_price: parseInt(e.target.value) || 0}}))} className="w-full max-w-[70px] bg-gray-50 border border-gray-300 rounded-lg px-2 py-1.5 text-sm font-bold text-gray-800 outline-none focus:border-blue-500" placeholder="0"/>
                            </div>
-                           <button onClick={() => setEditingSizeConfig(prev => ({...prev, [size]: {...prev[size], is_active: !(prev[size].is_active !== false)}}))} className="text-gray-500 transition-colors">
-  {(editingSizeConfig[size].is_active !== false) ? <ToggleRight size={28} className="text-green-500" /> : <ToggleLeft size={28} />}
-</button>
+                           
+                           <div className="flex items-center gap-1.5 mr-3 border-l pl-3 border-gray-100">
+                             <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Stock:</span>
+                             <input type="number" min="0" value={stockVal === 0 ? '' : stockVal} 
+                               onChange={(e) => {
+                                 const num = e.target.value === '' ? 0 : parseInt(e.target.value);
+                                 if (num < 0) return;
+                                 setEditingSizeConfig(prev => ({...prev, [size]: {...prev[size], stock: num, is_active: num > 0}}));
+                               }}
+                               className="w-[55px] bg-purple-50 border border-purple-200 text-purple-700 rounded-lg px-2 py-1.5 text-sm font-black outline-none focus:border-purple-500 text-center" placeholder="0" 
+                             />
+                           </div>
+
+                          <button onClick={() => {
+                             if (!isActive && (!stockVal || stockVal <= 0)) {
+                               showToast("Please enter stock first! 📦");
+                               return;
+                             }
+                             setEditingSizeConfig(prev => ({
+                                ...prev, 
+                                [size]: {
+                                   ...prev[size], 
+                                   is_active: !isActive,
+                                   // 🌟 NAYA: Agar OFF kar rahe hain, toh stock 0 kar do
+                                   stock: isActive ? 0 : prev[size].stock 
+                                }
+                             }));
+                           }} className="text-gray-500 transition-colors pr-1">
+                             {isActive ? <ToggleRight size={32} className="text-green-500" /> : <ToggleLeft size={32} />}
+                           </button>
                         </div>
-                    ))}
+                      )
+                    })}
                   </div>
                )}
             </div>

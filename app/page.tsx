@@ -151,7 +151,7 @@ export default function NayikaNaariApp() {
   const [products, setProducts] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<any>(null);
-  
+  const [cartAdjustedWarning, setCartAdjustedWarning] = useState(false);
   const [cart, setCart] = useState<any[]>([]);
   const [toastMsg, setToastMsg] = useState(''); 
   
@@ -265,6 +265,14 @@ const handleShareProduct = async (product: any, boxSize: number) => {
     const unread = localStorage.getItem('nayika_naari_unread');
     if (unread) setUnreadCount(Number(unread));
   }, []);
+
+// 🌟 NAYA: Jab bhi user Cart kholiye, DB se fresh data aur stock check karo
+  useEffect(() => {
+    if (view === 'cart' && currentUser) {
+      // Jaise hi cart khulega, ye background me stock check karega
+      loadDBCart(currentUser.id);
+    }
+  }, [view, currentUser]);
 
   useEffect(() => {
     if (currentUser && currentUser.id) {
@@ -485,9 +493,10 @@ const handleShareProduct = async (product: any, boxSize: number) => {
   };
 
   const loadDBCart = async (userId: number) => {
-    // 🌟 FIX: Faltu columns drop kiye, sirf zaroori data fetch kar rahe hain
     const { data } = await supabase.from('cart_items').select('product_id, size, qty, seller, updated_at, products(id, name, subcategory, cost, mrp, discount, meta, img, seller)').eq('user_id', userId).eq('status', 0);
     if (data && data.length > 0) {
+      let hasAdjustments = false;
+
       const rebuiltCart = data.map((item: any) => {
         const p = item.products;
         const meta = safeParseJSON(p.meta, {});
@@ -496,19 +505,38 @@ const handleShareProduct = async (product: any, boxSize: number) => {
         const imgData = safeParseJSON(p.img, { images: [] });
         const extraPrice = sizesRaw[item.size]?.extra_price || 0;
 
+        // 🌟 NAYA: Stock Checking Logic
+        const stockBoxes = sizesRaw[item.size]?.stock || 0;
+        const maxPcs = stockBoxes * boxSize;
+        let finalQtyPcs = item.qty;
+
+        // Agar size active hai, par user ne stock se zyada cart me daal rakha hai
+        if (sizesRaw[item.size]?.is_active !== false && stockBoxes > 0 && finalQtyPcs > maxPcs) {
+           finalQtyPcs = maxPcs;
+           hasAdjustments = true;
+           
+           // Background DB Silent Update
+           supabase.from('cart_items')
+             .update({ qty: finalQtyPcs })
+             .eq('user_id', userId).eq('product_id', p.id).eq('size', item.size).eq('status', 0)
+             .then();
+        }
+
         return {
           ...p,
           cartId: `${p.id}-${item.size}`,
           selectedSize: item.size,
-          qtyPieces: item.qty,
+          qtyPieces: finalQtyPcs, // Auto-corrected Qty use hogi
           boxSize: boxSize,
           unitPrice: p.cost + extraPrice,
-          totalLineCost: item.qty * (p.cost + extraPrice),
+          totalLineCost: finalQtyPcs * (p.cost + extraPrice),
           displayImg: imgData.images[0] || '',
           seller: item.seller || p.seller,
           updated_at: item.updated_at
         };
       });
+
+      if (hasAdjustments) setCartAdjustedWarning(true);
       setCart(rebuiltCart);
     } else {
       setCart([]);
@@ -544,19 +572,31 @@ const handleShareProduct = async (product: any, boxSize: number) => {
     setLoading(false);
   };
 
+  // 🌟 FIX 1: Splash Screen — deep link params preserve karo, auth ke baad bhi kaam kare
   useEffect(() => {
     if (view === 'splash') {
       setTimeout(() => {
+        const urlParams = new URLSearchParams(window.location.search);
+        const targetView = urlParams.get('view');
+        const targetOrderId = urlParams.get('order_id');
+        const targetProductId = urlParams.get('id');
+
+        // ✅ FIX: Deep link params ko sessionStorage mein save karo
+        // Taaki auth ke baad bhi use ho sake
+        if (targetView && (targetProductId || targetOrderId)) {
+          sessionStorage.setItem('pendingDeepLink', JSON.stringify({
+            view: targetView,
+            id: targetProductId,
+            order_id: targetOrderId
+          }));
+        }
+
         const savedUser = localStorage.getItem('nayika_naari_user');
         if (savedUser) {
           const parsedUser = JSON.parse(savedUser);
           setCurrentUser(parsedUser);
           setAddressData({ name: parsedUser.name, mobile: parsedUser.phone, pincode: parsedUser.pincode, address: parsedUser.address, city: parsedUser.city, state: parsedUser.state });
           loadDBCart(parsedUser.id);
-          
-          const urlParams = new URLSearchParams(window.location.search);
-          const targetView = urlParams.get('view');
-          const targetOrderId = urlParams.get('order_id');
 
           if (targetView === 'order_detail' && targetOrderId) {
              handleDirectOrderLink(targetOrderId, parsedUser.id);
@@ -566,11 +606,52 @@ const handleShareProduct = async (product: any, boxSize: number) => {
         } else { 
           const guestCart = localStorage.getItem('nayika_naari_guest_cart');
           if (guestCart) setCart(JSON.parse(guestCart));
-          setView('auth_phone'); 
+          
+          // Guest user — plp pe jaao (deep link FIX 2 wale useEffect mein handle hoga)
+          if (targetView === 'pdp' && targetProductId) {
+             setView('plp');
+          } else {
+             setView('auth_phone'); 
+          }
         }
       }, 2500);
     }
   }, [view]);
+
+  // 🌟 FIX 2: Products load hone ke baad — URL params + sessionStorage dono check karo
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    
+    // URL se params lo
+    const params = new URLSearchParams(window.location.search);
+    let viewParam = params.get('view');
+    let idParam = params.get('id');
+
+    // ✅ FIX: Agar URL params nahi hain, sessionStorage check karo (auth ke baad wala case)
+    if (!viewParam && !idParam) {
+      const pending = sessionStorage.getItem('pendingDeepLink');
+      if (pending) {
+        try {
+          const parsed = JSON.parse(pending);
+          viewParam = parsed.view;
+          idParam = parsed.id;
+        } catch {}
+      }
+    }
+
+    if (viewParam === 'pdp' && idParam && products && products.length > 0) {
+      const productToShow = products.find((p: any) => String(p.id) === String(idParam));
+      
+      if (productToShow) {
+        setSelectedProduct(productToShow); 
+        setView('pdp');
+        // ✅ Pending deep link clear karo
+        sessionStorage.removeItem('pendingDeepLink');
+        // URL saaf karo taaki refresh pe hang na ho
+        window.history.replaceState(null, '', '/'); 
+      }
+    }
+  }, [products]);
 
   // 🌟 SELLER CART LOGIC
   const cartSellers = useMemo(() => {
@@ -1153,8 +1234,21 @@ const openOrderDetails = async (order: any) => {
     return filtered;
   }, [products, debouncedSearchQuery, appliedFilters, quickFilter, orderedProductIds]); // 🌟 FIX: Dependancy updated
 
-  const updateQty = (size: string, delta: number, boxSize: number) => {
-    setSizeQuantities(prev => ({ ...prev, [size]: Math.max(0, (prev[size] || 0) + (delta * boxSize)) }));
+  const updateQty = (size: string, delta: number, boxSize: number, maxBoxes?: number) => {
+    setSizeQuantities(prev => {
+      const currentPcs = prev[size] || 0;
+      const newPcs = Math.max(0, currentPcs + (delta * boxSize));
+
+      // 🌟 NAYA: Check karo agar limit cross ho rahi hai
+      if (delta > 0 && maxBoxes !== undefined) {
+        const newBoxes = newPcs / boxSize;
+        if (newBoxes > maxBoxes) {
+          showToast(`Max ${maxBoxes} Box available currently! 📦`);
+          return prev; // Limit cross nahi karne dega
+        }
+      }
+      return { ...prev, [size]: newPcs };
+    });
   };
 
   const addToTruck = async () => {
@@ -1398,7 +1492,7 @@ const handlePlaceOrder = async (paymentSuccess: boolean = false, rzpPaymentId: s
      // 🌟 FIX: Direct location change, Bypass mobile popup blocker
       setIsPlacingOrder(false); 
       setPaymentScreenshot(null);
-      window.location.href = `https://wa.me/919758008624?text=${encodeURIComponent(msg)}`;
+      window.location.href = `whatsapp://send?phone=919758008624&text=${encodeURIComponent(msg)}`;
 
     } catch (e: any) { 
        alert("Order Failed: " + e.message); 
@@ -1753,7 +1847,7 @@ if (view === 'splash') return (
                   <div>
                     <p className="text-[9px] text-gray-400 font-bold uppercase tracking-tighter">Deliver to</p>
                     <p className="text-[11px] font-bold leading-tight truncate w-24" style={{color: theme.textDark}} translate="no">
-                      <span>{currentUser?.city || 'India'}</span>
+                      <span>{currentUser?.pincode || 'India'}</span>
                     </p>
                   </div>
                 </div>
@@ -2022,12 +2116,12 @@ if (view === 'splash') return (
                               <>
                                 <button onClick={() => updateQty(size, -1, boxSize)} className={`w-8 h-8 rounded-full border flex items-center justify-center font-black active:scale-95 transition-all text-lg leading-none ${isSelected ? 'bg-white' : 'border-gray-200 text-gray-400'}`} style={isSelected ? {borderColor: theme.primary, color: theme.primary} : {}}>-</button>
                                 <span className="w-5 text-center font-bold text-gray-900 text-[15px]">{qtyPieces}</span>
-                                <button onClick={() => updateQty(size, 1, boxSize)} className={`w-8 h-8 rounded-full border flex items-center justify-center font-black active:scale-95 transition-all text-lg leading-none ${isSelected ? 'text-white' : 'border-gray-200 text-gray-400'}`} style={isSelected ? {backgroundColor: theme.primary, borderColor: theme.primary} : {}}>+</button>
+                                <button onClick={() => updateQty(size, 1, boxSize, sizesRaw[size]?.stock || 0)} className={`w-8 h-8 rounded-full border flex items-center justify-center font-black active:scale-95 transition-all text-lg leading-none ${isSelected ? 'text-white' : 'border-gray-200 text-gray-400'}`} style={isSelected ? {backgroundColor: theme.primary, borderColor: theme.primary} : {}}>+</button>
                               </>
                           ) : (
                               // 🔴 OUT-OF-STOCK (Coming Soon Tag)
                               <span className="text-[10px] font-black text-orange-500 bg-orange-50 px-3 py-1.5 rounded-md border border-orange-100 uppercase tracking-widest flex items-center gap-1">
-                                 ⏳ Coming Soon
+                                 ⏳ Currently Unavailable
                               </span>
                           )}
                         </div>
@@ -2061,10 +2155,23 @@ if (view === 'splash') return (
 
         {view === 'cart' && (
           <div className="animate-in slide-in-from-bottom-4 duration-300 bg-[#F5F5F6] flex-1 flex flex-col pb-[120px] w-full relative">
+             {/* 1. Login Banner (Only for guests) */}
              {!currentUser && cart.length > 0 && (
                 <div className="bg-white p-3 flex justify-between items-center border-b border-gray-200 m-2 rounded-xl shadow-sm">
                   <p className="text-[11px] font-bold text-gray-600">Log in to save your cart.</p>
                   <button onClick={() => setView('auth_phone')} className="text-white text-[10px] font-bold px-3 py-1.5 rounded" style={{backgroundColor: theme.primary}}>Login</button>
+                </div>
+             )}
+
+             {/* 2. Warning Banner (Niche, bahar nikal diya) */}
+             {cartAdjustedWarning && (
+                <div className="bg-[#FFF4E5] p-3 flex gap-3 items-start border-b border-[#FFE0B2] m-2 rounded-xl shadow-sm animate-in slide-in-from-top-2">
+                  <AlertCircle size={18} className="text-[#A65B00] shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <p className="text-[12px] font-bold text-[#A65B00] leading-tight">Cart Updated Automatically</p>
+                    <p className="text-[10px] font-medium text-[#A65B00] mt-0.5">Some item quantities were reduced because stock was bought by other users.</p>
+                  </div>
+                  <button onClick={() => setCartAdjustedWarning(false)} className="text-[#A65B00] p-1 active:bg-[#FFE0B2] rounded-full"><X size={14}/></button>
                 </div>
              )}
 
@@ -2225,19 +2332,27 @@ if (view === 'splash') return (
                              <span>Few Sizes/Products may be out of stock, confirmed over call.</span>
                            </div>
                         )}
-                        <div className="p-3 flex justify-between items-center w-full">
-                          <div className="flex flex-col ml-1">
-   <p className="font-bold text-gray-600 text-[11px]">
-     <span>Shipping ₹100 Advance to confirm order</span>
-   </p>
+                       <div className="p-3 flex justify-between items-center w-full gap-2">
+  <div className="flex flex-col ml-1 flex-1 pr-2">
+    <span className="font-black text-gray-800 text-[13px]">
+     Item Subtotal (₹{cartTotalAmount})
+    </span>
+    <span className="font-semibold text-gray-500 text-[10px] leading-tight mt-0.5">
+      Order will be confirmed after Shipping Payment only
+    </span>
+  </div>
 
+  <div className="flex items-center shrink-0">
+    <button 
+      onClick={handlePlaceOrderClick} 
+      className={`px-4 py-2.5 flex flex-col items-center justify-center rounded-lg shadow-sm transition-all whitespace-nowrap min-w-[120px] ${isMovMet ? 'text-white active:scale-95' : 'bg-gray-100 text-gray-400 cursor-not-allowed opacity-70'}`} 
+      style={isMovMet ? {backgroundColor: theme.primary} : {}}
+    >
+      <span className="font-black uppercase tracking-widest text-[12px]">Place Order</span>
+      <span className="text-[9px] font-bold mt-0.5 tracking-wider opacity-90">Pay ₹100 Shipping</span>
+    </button>
+  </div>
 </div>
-                          <div className="flex items-center gap-2">
-                            <button onClick={handlePlaceOrderClick} className={`px-5 py-3.5 rounded font-bold uppercase tracking-widest text-[12px] shadow-sm transition-all ${isMovMet ? 'text-white active:scale-95' : 'bg-gray-100 text-gray-400 cursor-not-allowed opacity-70'}`} style={isMovMet ? {backgroundColor: theme.primary} : {}}>
-                                PLACE ORDER (₹{cartTotalAmount})
-                             </button>
-                          </div>
-                        </div>
                      </div>
                    );
                 })()}
@@ -2749,7 +2864,7 @@ if (view === 'splash') return (
                         <div className="flex items-center gap-4">
                           <button onClick={() => updateQty(size, -1, boxSize)} className={`w-10 h-10 rounded-full border flex items-center justify-center font-black active:scale-95 transition-all text-xl leading-none ${isSelected ? 'bg-white shadow-sm' : 'border-gray-200 text-gray-400'}`} style={isSelected ? {borderColor: theme.primary, color: theme.primary} : {}}>-</button>
                           <span className="w-6 text-center font-black text-gray-900 text-[17px]">{qtyPieces}</span>
-                          <button onClick={() => updateQty(size, 1, boxSize)} className={`w-10 h-10 rounded-full border flex items-center justify-center font-black active:scale-95 transition-all text-xl leading-none ${isSelected ? 'text-white shadow-sm' : 'border-gray-200 text-gray-400'}`} style={isSelected ? {backgroundColor: theme.primary, borderColor: theme.primary} : {}}>+</button>
+                          <button onClick={() => updateQty(size, 1, boxSize, sizesRaw[size]?.stock || 0)} className={`w-10 h-10 rounded-full border flex items-center justify-center font-black active:scale-95 transition-all text-xl leading-none ${isSelected ? 'text-white shadow-sm' : 'border-gray-200 text-gray-400'}`} style={isSelected ? {backgroundColor: theme.primary, borderColor: theme.primary} : {}}>+</button>
                         </div>
                       </div>
                     );

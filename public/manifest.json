@@ -4,6 +4,10 @@
   "description": "Your ultimate B2B wholesale destination for all women's essentials—from innerwear and apparel to bags and cosmetics, guaranteed at unbeatable factory prices.",
   "start_url": "/",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "launch_handler": {
+    "client_mode": "navigate-existing"
+  },
   "scope": "/",
   "background_color": "#ffffff",
   "theme_color": "#FF3F6C",
@@ -21,5 +25,17 @@
       "type": "image/png",
       "purpose": "any maskable"
     }
-  ]
+  ],
+  "related_applications": [
+    {
+      "platform": "play",
+      "id": "app.vercel.nayikanaari.twa",
+      "url": "https://nayikanaari.vercel.app"
+    },
+    {
+      "platform": "webapp",
+      "url": "https://nayikanaari.vercel.app/manifest.json"
+    }
+  ],
+  "prefer_related_applications": false
 }

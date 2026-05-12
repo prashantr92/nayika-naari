@@ -1,8 +1,11 @@
-[{
-      "relation": ["delegate_permission/common.handle_all_urls"],
-      "target": {
-        "namespace": "android_app",
-        "package_name": "app.vercel.nayikanaari.twa",
-        "sha256_cert_fingerprints": ["B4:08:C7:CA:C8:96:28:10:33:16:00:C0:76:F1:C8:22:EA:14:DA:B1:CB:5D:D4:50:2C:5C:97:67:CC:6F:88:D4"]
-      }
-    }]
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "app.vercel.nayikanaari.twa",
+      "sha256_cert_fingerprints":
+        ["D4:38:F9:D6:E0:FE:4C:6A:CD:12:D0:C1:83:F5:AC:DF:E3:23:9F:F6:D4:5C:8A:B5:EA:5C:A8:AF:81:39:9A:3F"]
+    }
+  }
+]
