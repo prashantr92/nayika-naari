@@ -4,7 +4,7 @@
 
 const CACHE_VERSION = 'v1776176150307'; // Vercel build time se replace hoga
 const CACHE_NAME = `nayika-naari-${CACHE_VERSION}`;
-const IMAGE_CACHE_NAME = 'nayika-naari-images-v1'; // 🌟 NAYA: Ye cache app update hone par delete nahi hoga!
+const IMAGE_CACHE_NAME = 'nayika-naari-images-v1'; // 🌟 Ye cache app update hone par delete nahi hoga!
 
 // Ye files cache karo (app shell)
 const STATIC_ASSETS = [
@@ -39,7 +39,7 @@ self.addEventListener('activate', (event) => {
       caches.keys().then((cacheNames) => {
         return Promise.all(
           cacheNames
-            .filter((name) => name !== CACHE_NAME && name !== IMAGE_CACHE_NAME) // 🌟 FIX: Image cache save rahega
+            .filter((name) => name !== CACHE_NAME && name !== IMAGE_CACHE_NAME) 
             .map((name) => {
               console.log('[SW] Deleting old cache:', name);
               return caches.delete(name);
@@ -57,8 +57,11 @@ self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // 1. 🌟 NAYA: Supabase Storage (Images) ke liye CACHE FIRST Strategy
-  if (url.hostname.includes('supabase.co') && url.pathname.includes('/storage/v1/object/public/')) {
+  // 1. 🌟 NAYA FIX: Supabase Storage aur ImageKit dono ke liye CACHE FIRST Strategy
+  if (
+    url.hostname.includes('ik.imagekit.io') || 
+    (url.hostname.includes('supabase.co') && url.pathname.includes('/storage/v1/object/public/'))
+  ) {
     event.respondWith(
       caches.match(request).then((cached) => {
         // Agar phone ki memory mein image hai, toh turant de do (0kb internet use)

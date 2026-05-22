@@ -2,15 +2,15 @@ import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
   images: {
-    unoptimized: true,
+    unoptimized: true, // ImageKit use kar rahe hain toh ye true hi hona chahiye
     remotePatterns: [
       {
         protocol: 'https',
-        hostname: '**.supabase.co', // Purani images ke liye
+        hostname: '**.supabase.co', 
       },
       {
         protocol: 'https',
-        hostname: 'ik.imagekit.io', // 🌟 NAYA: ImageKit CDN ke liye
+        hostname: 'ik.imagekit.io', 
       },
     ],
   },

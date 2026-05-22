@@ -1,7 +1,7 @@
 // @ts-nocheck
 /* eslint-disable */
 "use client";
-import React, { useState, useEffect, useMemo, memo } from 'react'; // 🌟 NAYA: memo aur React add kiya
+import React, { useState, useEffect, useMemo, memo, useRef } from 'react'; // 🌟 NAYA: memo aur React add kiya
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { 
@@ -129,14 +129,12 @@ const ProductCard = memo(({ p, openPDP }: { p: any, openPDP: (p: any) => void })
         <div className="mt-1.5 flex flex-col gap-1">
           <div className="flex items-center gap-1.5">
             <p className="font-black text-[15px] text-gray-900 leading-none">₹{p.cost}</p>
-            {p.mrp && p.mrp > p.cost && (
-              <>
-                <p className="text-[14px] text-gray-400 line-through font-medium leading-none">MRP ₹{p.mrp}</p>
-                <span className="text-[12px] font-bold leading-none tracking-tight" style={{color: theme.offer}}>
-                  ({p.discount ? `${p.discount}% OFF` : 'SALE'})
-                </span>
-              </>
-            )}
+            {/* 🌟 NAYA LOGIC: Agar MRP maujood hai aur Cost se badi hai, tabhi ye tag dikhega */}
+{p.mrp && p.mrp > p.cost && (
+  <span className="text-[12px] font-bold leading-none tracking-tight" style={{color: theme.offer}}>
+    ({Math.round(((p.mrp - p.cost) / p.mrp) * 100)}% OFF)
+  </span>
+)}
           </div>
         </div>
       </div>
@@ -165,49 +163,76 @@ export default function NayikaNaariApp() {
   const [currentImgIndex, setCurrentImgIndex] = useState(0);
   const [isAdding, setIsAdding] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
+  const [showMaintenance, setShowMaintenance] = useState(true);
 const handleShareProduct = async (product: any, boxSize: number) => {
-    setIsSharing(true);
-    try {
-      const meta = safeParseJSON(product.meta, {});
-      
-      // 1. 🌟 Active Sizes nikalna
-      const sizesRaw = meta?.attributes?.available_sizes || {};
-      const activeSizes = Array.isArray(sizesRaw) 
-         ? sizesRaw 
-         : Object.keys(sizesRaw).filter(s => sizesRaw[s]?.is_active !== false);
-         
-      // 2. 🌟 Available Colors nikalna (Agar tumne DB me save kiye hain)
-      const colorsRaw = meta?.attributes?.available_colors || [];
+  setIsSharing(true);
+  try {
+    const meta = safeParseJSON(product.meta, {});
+    
+    // 🌟 Pehli image URL nikalna (Tumhare pichle code block ke hisaab se)
+    const imgData = safeParseJSON(product.img, { images: [] });
+    const imageUrl = imgData.images[0];
 
-      // 3. 🌟 Formatting with Emojis
-      const sizesText = activeSizes.length > 0 ? `\n📏 *Sizes:* ${activeSizes.join(', ')}` : '';
-      const colorsText = colorsRaw.length > 0 ? `\n🎨 *Colors:* ${colorsRaw.join(', ')}` : '';
-      const descText = product.description ? `\n\n📝 *Details:*\n${product.description}` : '';
+    // 1. 🌟 Active Sizes nikalna
+    const sizesRaw = meta?.attributes?.available_sizes || {};
+    const activeSizes = Array.isArray(sizesRaw) 
+       ? sizesRaw 
+       : Object.keys(sizesRaw).filter(s => sizesRaw[s]?.is_active !== false);
+       
+    // 2. 🌟 Available Colors nikalna
+    const colorsRaw = meta?.attributes?.available_colors || [];
 
-      // 4. 🌟 Final Message Ready
-      const shareText = `*${product.name}*\n📦 MOQ: ${boxSize} Pcs Box\n💰 Rate: ₹${product.cost} (MRP: ₹${product.mrp})${sizesText}${colorsText}${descText}\n\n👉 View on App:\n${window.location.origin}/?view=pdp&id=${product.id}`;
+    // 3. 🌟 Formatting with Emojis
+    const sizesText = activeSizes.length > 0 ? `\n📏 *Sizes:* ${activeSizes.join(', ')}` : '';
+    const colorsText = colorsRaw.length > 0 ? `\n🎨 *Colors:* ${colorsRaw.join(', ')}` : '';
+    const descText = product.description ? `\n\n📝 *Details:*\n${product.description}` : '';
 
-      // Phone ki native share screen kholne ke liye
-      if (navigator.share) {
-        await navigator.share({
-          title: product.name,
-          text: shareText,
-        });
-      } else {
-        // Agar PC/Laptop par hain, toh seedha WhatsApp web khulega
-        const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(shareText)}`;
-        window.open(whatsappUrl, '_blank');
+    // 4. 🌟 Final Message Ready
+    const shareText = `*${product.name}*\n📦 MOQ: ${boxSize} Pcs Box\n💰 Rate: ₹${product.cost} (MRP: ₹${product.mrp})${sizesText}${colorsText}${descText}\n\n👉 View on App:\n${window.location.origin}/?view=pdp&id=${product.id}`;
+
+    // 5. 🌟 Image fetch karke File object banana
+    let shareFiles: File[] = [];
+    if (imageUrl) {
+      try {
+        const response = await fetch(imageUrl);
+        const blob = await response.blob();
+        const fileExt = imageUrl.split('.').pop()?.split('?')[0] || 'jpg';
+        const file = new File([blob], `product-${product.id}.${fileExt}`, { type: blob.type });
+        shareFiles = [file];
+      } catch (imgError) {
+        console.error("Image fetch failed, sending text only", imgError);
       }
-    } catch (error) {
-      console.log("Share failed:", error);
-    } finally {
-      setIsSharing(false);
     }
-  };
+
+    // 6. 🌟 Native Share with Image
+    if (navigator.share) {
+      const shareData: any = {
+        title: product.name,
+        text: shareText,
+      };
+
+      // Browser check karega ki image file share ho sakti hai ya nahi
+      if (shareFiles.length > 0 && navigator.canShare && navigator.canShare({ files: shareFiles })) {
+        shareData.files = shareFiles;
+      }
+
+      await navigator.share(shareData);
+    } else {
+      // Agar PC/Laptop par hain, toh seedha WhatsApp web khulega (Without Image due to API limits)
+      const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(shareText)}`;
+      window.open(whatsappUrl, '_blank');
+    }
+  } catch (error) {
+    console.log("Share failed:", error);
+  } finally {
+    setIsSharing(false);
+  }
+};
  const [selectedSubcategory, setSelectedSubcategory] = useState<string>('All'); // Kept for safe fallback
   const [activeSheet, setActiveSheet] = useState<'none' | 'address' | 'sizes'>('none');
 
   // 🌟 NAYA: Filter & Sort States
+  const mainScrollRef = useRef<HTMLDivElement>(null);
   const [quickFilter, setQuickFilter] = useState('All');
   const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false);
   const [activeFilterTab, setActiveFilterTab] = useState('Price');
@@ -492,8 +517,15 @@ const handleShareProduct = async (product: any, boxSize: number) => {
     setTimeout(() => setToastMsg(''), 2500);
   };
 
-  const loadDBCart = async (userId: number) => {
-    const { data } = await supabase.from('cart_items').select('product_id, size, qty, seller, updated_at, products(id, name, subcategory, cost, mrp, discount, meta, img, seller)').eq('user_id', userId).eq('status', 0);
+ const loadDBCart = async (userId: number) => {
+    const { data, error } = await supabase.from('cart_items').select('product_id, size, qty, seller, updated_at, products(id, name, subcategory, cost, mrp, discount, meta, img, seller)').eq('user_id', userId).eq('status', 0);
+    
+    // 🌟 NAYA DEBUG CODE: Error check karne ke liye
+    if (error) {
+      console.error("FETCH CART ERROR:", error);
+      alert("Cart load hone mein error: " + error.message);
+    }
+
     if (data && data.length > 0) {
       let hasAdjustments = false;
 
@@ -757,13 +789,17 @@ const processTruckUpdate = (baseProduct: any) => {
     return newItems;
   };
 
+// 🌟 NAYA: Smart Scroll Restorer (Ref ke sath)
   useEffect(() => {
-    if (view === 'plp') {
-      const scrollContainer = document.getElementById('main-scroll');
-      if (scrollContainer) {
+    if (mainScrollRef.current) {
+      if (view === 'plp') {
+        // PLP par aate hi wahi scroll kar do jahan chhoda tha
         setTimeout(() => {
-          scrollContainer.scrollTop = plpScrollPos;
-        }, 10);
+          if (mainScrollRef.current) mainScrollRef.current.scrollTop = plpScrollPos;
+        }, 50);
+      } else if (view === 'pdp') {
+        // PDP hamesha top se khulna chahiye
+        mainScrollRef.current.scrollTop = 0; 
       }
     }
   }, [view]);
@@ -779,64 +815,57 @@ const processTruckUpdate = (baseProduct: any) => {
       return array;
   };
 
-  useEffect(() => {
+ useEffect(() => {
     async function getProducts() {
-      if (view === 'plp' && products.length === 0) {
-        setLoading(true);
-
-        // 🌟 NAYA: Session Storage Caching
-        const cachedProducts = sessionStorage.getItem('nayika_naari_products');
-        const cacheTime = sessionStorage.getItem('nayika_naari_products_time');
-        const isCacheValid = cachedProducts && cacheTime && (Date.now() - Number(cacheTime) < 3600000); // 1 Hour cache
-
-        let finalData: any[] = [];
-
-        if (isCacheValid) {
-           finalData = JSON.parse(cachedProducts); 
-        } else {
-           const { data } = await supabase.from('products')
-              .select('id, name, subcategory, cost, mrp, discount, description, meta, img, seller, createdAt')
-              .eq('status', 1)
-              .order('id', { ascending: false });
-           
-           if (data) {
-              finalData = data;
-              sessionStorage.setItem('nayika_naari_products', JSON.stringify(data));
-              sessionStorage.setItem('nayika_naari_products_time', Date.now().toString());
-           }
-        }
+      // 🌟 NAYA FIX: Fetch hamesha chalega (Data fresh rakhne ke liye)
+      if (view === 'plp') { 
         
-        if (finalData.length > 0) {
-           // 1. Data ko random shuffle karo (Sirf finalData use hoga)
-           let randomizedData = shuffleArray([...finalData]);
+        // 🌟 SMART SILENT FETCH: Agar list khali hai tabhi loading spinner dikhao.
+        // Agar products pehle se hain, toh UI block nahi hoga, background me data aayega.
+        if (products.length === 0) {
+          setLoading(true);
+        }
 
-           // 2. Active/Inactive/Partial Check karke Out-of-Stock wale items ko end mein bhej do
-           randomizedData.sort((a, b) => {
-               const getStatus = (p: any) => {
-                  const sizes = safeParseJSON(p.meta, {})?.attributes?.available_sizes || {}; 
-                  const keys = Object.keys(sizes);
-                  if (keys.length === 0) return 0; // Inactive
-                  const activeCount = keys.filter(k => sizes[k].is_active !== false).length;
-                  return activeCount === keys.length ? 2 : activeCount === 0 ? 0 : 1; 
-               };
+        // 🌟 1. DIRECT DB FETCH (Naya item sabse upar)
+        const { data } = await supabase.from('products')
+            .select('id, name, subcategory, cost, mrp, discount, description, meta, img, seller, createdAt, updated_at')
+            .eq('status', 1)
+            .order('updated_at', { ascending: false }); 
+        
+        if (data && data.length > 0) {
+           
+           // 🌟 2. FOOLPROOF LOGIC: Sort ki jagah Filter use karenge taaki DB ka order na toote!
+           const inStockItems = [];
+           const outOfStockItems = [];
+
+           data.forEach(p => {
+               const sizes = safeParseJSON(p.meta, {})?.attributes?.available_sizes || {};
+               const keys = Object.keys(sizes);
                
-               const statusA = getStatus(a);
-               const statusB = getStatus(b);
-               
-               if (statusA > statusB) return -1;
-               if (statusA < statusB) return 1;
-               return 0; 
+               // Check karo ki product mein koi ek size bhi active hai ya nahi
+               const hasActiveSize = keys.some(k => sizes[k].is_active !== false);
+
+               if (keys.length > 0 && hasActiveSize) {
+                   inStockItems.push(p);  // Jo stock mein hain
+               } else {
+                   outOfStockItems.push(p); // Jo Out of stock hain
+               }
            });
 
-           setProducts(randomizedData);
+           // 🌟 3. In-Stock upar, aur OOS niche (Dono mein DB ka exact updated_at order barkarar rahega)
+           // Ye screen par silently naya data update kar dega bina scroll hilaye!
+           setProducts([...inStockItems, ...outOfStockItems]);
+
         } else {
            setProducts([]);
         }
+        
+        // Fetch poora hone ke baad loading hata do
         setLoading(false);
       }
     }
     getProducts();
-  }, [view]);
+  }, [view]); // Dhyan rakhna, dependency array mein sirf [view] rahega
 
   // 🌟 NAYA: Search Debouncing (Type karna band karega tabhi list filter hogi)
   useEffect(() => {
@@ -1310,7 +1339,15 @@ const openOrderDetails = async (order: any) => {
         seller: item.seller, 
         updated_at: getLocalTimestamp()
       }));
-      await supabase.from('cart_items').upsert(dbUpsertData, { onConflict: 'user_id, product_id, size, status' });
+      
+      // 🌟 NAYA DEBUG CODE: Error check karne ke liye
+      const { data, error } = await supabase.from('cart_items').upsert(dbUpsertData, { onConflict: 'user_id, product_id, size, status' });
+      
+      if (error) {
+        console.error("CART SUPABASE ERROR:", error);
+        alert("Error " + error.message);
+        return; // Error aaye toh aage ka code mat chalao
+      }
     }
 
     setTimeout(() => {
@@ -1976,7 +2013,17 @@ if (view === 'splash') return (
         </header>
       )}
 
-      <main id="main-scroll" className="flex-1 flex flex-col w-full overflow-y-auto scrollbar-hide pb-[90px]">
+      <main 
+        id="main-scroll" 
+        ref={mainScrollRef} 
+        className="flex-1 flex flex-col w-full overflow-y-auto scrollbar-hide pb-[90px]"
+        onScroll={(e) => {
+          // 🌟 NAYA: Jaise hi user scroll kare, position save karte raho
+          if (view === 'plp') {
+            setPlpScrollPos(e.currentTarget.scrollTop);
+          }
+        }}
+      >
         
         {view === 'notifications' && (
           <div className="animate-in fade-in duration-300 flex flex-col flex-1 bg-[#F5F5F6] relative p-4">
@@ -2014,9 +2061,22 @@ if (view === 'splash') return (
              )}
           </div>
         )}
+        
 
         {view === 'plp' && (
           <div className="animate-in fade-in duration-500 bg-gray-100 flex-1 flex flex-col">
+            {/* 🌟 NAYA: WhatsApp Channel Banner (Scrolls with products) */}
+            {/* 🌟 NAYA: WhatsApp Channel Banner (Direct App Open Fix) */}
+            <a 
+              href="https://whatsapp.com/channel/0029VbAluqmHFxP6pcJmEc0H" 
+              className="block w-full cursor-pointer shrink-0"
+            >
+              <img 
+                src="https://www.callbell.eu/assets/uploads/2023/07/EN.jpg" 
+                alt="Join our WhatsApp Channel" 
+                className="w-full h-auto max-h-[150px] object-cover"
+              />
+            </a>
           {/* 🌟 NAYA: Dynamic Pills + Filters Button */}
            <div className="flex items-center gap-2 px-3 py-3 bg-white border-b border-gray-200 shrink-0 sticky top-0 z-30 shadow-[0_2px_10px_rgba(0,0,0,0.03)]">
               <div className="flex overflow-x-auto gap-2 scrollbar-hide flex-1 pb-0.5">
@@ -2098,10 +2158,14 @@ if (view === 'splash') return (
           const metaData = safeParseJSON(selectedProduct.meta, {});
           const sizesRaw = metaData?.attributes?.available_sizes || {};
           
-          // 🌟 FIX 1: Yahan se `.filter` hata diya taaki inactive sizes bhi UI mein aayein
+          // 🌟 NAYA FIX: Inactive aur 0 stock wale sizes ab PDP par dikhenge hi nahi
           const sizes = Array.isArray(sizesRaw) 
              ? sizesRaw 
-             : Object.keys(sizesRaw); 
+             : Object.keys(sizesRaw).filter(size => {
+                 const sizeData = sizesRaw[size];
+                 // Filter logic: Sirf wahi size dikhega jo active ho AUR uska stock 0 se zyada ho
+                 return sizeData?.is_active !== false && (sizeData?.stock === undefined || sizeData?.stock > 0);
+             }); 
 
           const getExtraPrice = (s: string) => Array.isArray(sizesRaw) ? 0 : (sizesRaw[s]?.extra_price || 0);
           const boxSize = metaData?.attributes?.box_size?.[0] || 6;
@@ -2135,13 +2199,14 @@ if (view === 'splash') return (
                   <div className="flex items-center gap-2">
                     <p className="text-[26px] font-black text-gray-900 leading-none">₹{selectedProduct.cost}</p>
                     {selectedProduct.mrp && selectedProduct.mrp > selectedProduct.cost && (
-                      <div className="flex flex-col justify-center mt-1">
-                        <p className="text-[14px] text-gray-400 line-through font-bold leading-none">MRP ₹{selectedProduct.mrp}</p>
-                        <span className="bg-[#E5F7ED] text-[#008A00] px-1 py-[2px] rounded text-[12px] font-black tracking-wider leading-none mt-1 w-fit">
-                          {selectedProduct.discount}% OFF
-                        </span>
-                      </div>
-                    )}
+  <div className="flex flex-col justify-center mt-1">
+    <p className="text-[14px] text-gray-400 line-through font-bold leading-none">MRP ₹{selectedProduct.mrp}</p>
+    <span className="bg-[#E5F7ED] text-[#008A00] px-1 py-[2px] rounded text-[12px] font-black tracking-wider leading-none mt-1 w-fit">
+      {/* 🌟 NAYA LOGIC: Database ke discount par depend na karke on-the-spot calculate hoga */}
+      {Math.round(((selectedProduct.mrp - selectedProduct.cost) / selectedProduct.mrp) * 100)}% OFF
+    </span>
+  </div>
+)}
                   </div>
                   {/* 🌟 NAYA: Share button next to MOQ */}
                   <div className="flex items-center gap-2">
@@ -2755,7 +2820,31 @@ if (view === 'splash') return (
                     <p className="text-sm text-gray-600 leading-relaxed">{currentUser?.address}</p>
                     <p className="text-sm text-gray-600 leading-relaxed">{currentUser?.city}, {currentUser?.state} - {currentUser?.pincode}</p>
                  </div>
-
+                {/* 🌟 NAYA: Customer Helpline CTA */}
+            <a 
+              href="whatsapp://send?phone=919758008624" 
+              target="_blank" 
+              rel="noreferrer" 
+              className="flex items-center justify-between bg-[#E5F7ED] p-4 rounded-2xl border border-green-200 mb-4 active:scale-95 transition-transform cursor-pointer shadow-sm"
+            >
+              <div className="flex items-center gap-3">
+                {/* WhatsApp Green Icon */}
+                <div className="w-10 h-10 bg-[#008A00] rounded-full flex items-center justify-center text-white shrink-0 shadow-sm">
+                  {/* 🌟 FIX: MessageCircle ki jagah pehle se imported Phone icon use kiya hai */}
+                  <Phone size={20} /> 
+                </div>
+                <div>
+                  <h4 className="font-black text-[#008A00] text-sm uppercase tracking-widest leading-none">Customer Helpline</h4>
+                  <p className="text-xs font-bold text-green-700 mt-1 flex items-center gap-1">
+                    975800 8624
+                  </p>
+                </div>
+              </div>
+              
+              <div className="bg-white text-[#008A00] text-[10px] font-black px-3 py-1.5 rounded-lg border border-green-200 uppercase tracking-widest shadow-sm">
+                Chat Now
+              </div>
+            </a>
                  {deferredPrompt && (
                    <div className="px-4 mb-4">
                      <button onClick={handleInstallClick} style={{backgroundColor: theme.primary}} className="w-full text-white py-3.5 rounded font-bold text-xs tracking-widest flex items-center justify-center gap-2 shadow-sm uppercase">
@@ -3065,22 +3154,40 @@ if (view === 'splash') return (
 
       {/* BOTTOM NAVIGATION */}
       {view !== 'pdp' && view !== 'cart' && view !== 'splash' && view !== 'auth_phone' && view !== 'login_password' && view !== 'signup' && view !== 'tracking' && view !== 'order_detail' && (
-        <nav className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[450px] bg-white border-t border-gray-200 flex justify-around py-2 z-30 shadow-[0_-5px_15px_rgba(0,0,0,0.03)]">
-          <button onClick={() => setView('plp')} className="p-2 flex flex-col items-center gap-1"><Home color={view === 'plp' ? theme.primary : '#9CA3AF'} size={20} /> <span className="text-[9px] font-bold" style={{color: view === 'plp' ? theme.primary : '#9CA3AF'}}>Home</span></button>
+        <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[450px] z-30 flex flex-col pointer-events-none">
           
-          <button onClick={() => setView('cart')} className="relative p-2 flex flex-col items-center gap-1">
-            <ShoppingCart color={view === 'cart' ? theme.primary : '#9CA3AF'} size={20} />
-            {cart.length > 0 && <span className="absolute top-0 right-1 text-white text-[8px] w-3.5 h-3.5 flex items-center justify-center font-bold border border-white rounded-full" style={{backgroundColor: theme.primary}}>{cart.length}</span>}
-            <span className="text-[9px] font-bold" style={{color: view === 'cart' ? theme.primary : '#9CA3AF'}}>Cart</span>
-          </button>
+          {/* 🌟 NAYA: MAINTENANCE BANNER 
+          {showMaintenance && (
+            <div className="bg-[#FFF4E5] p-3 flex gap-3 items-start border border-[#FFE0B2] mx-2 mb-2 rounded-xl shadow-md animate-in slide-in-from-bottom-2 pointer-events-auto">
+              <AlertCircle size={18} className="text-[#A65B00] shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <p className="text-[12px] font-bold text-[#A65B00] leading-tight">SYSTEM UNDER MAINTENANCE 🛠️</p>
+                <p className="text-[10px] font-medium text-[#A65B00] mt-0.5">We are doing our system updates, You may face issues in running app for 3-5 days! (हम अभी सिस्टम अपडेट कर रहे हैं, इसलिए अगले 3-5 दिनों तक ऐप चलाने में कुछ समस्या आ सकती है! 🛠️)</p>
+              </div>
+              <button onClick={() => setShowMaintenance(false)} className="text-[#A65B00] p-1 active:bg-[#FFE0B2] rounded-full shrink-0"><X size={14}/></button>
+            </div>
+          )}
+          */}
 
-          <button onClick={() => { if(currentUser) { fetchMyOrders(); setView('orders'); } else { alert("Login to view orders"); setView('auth_phone'); } }} className="p-2 flex flex-col items-center gap-1">
-            <ClipboardList color={view === 'orders' ? theme.primary : '#9CA3AF'} size={20} /> 
-            <span className="text-[9px] font-bold" style={{color: view === 'orders' ? theme.primary : '#9CA3AF'}}>Orders</span>
-          </button>
+          {/* ORIGINAL NAV BAR */}
+          <nav className="bg-white border-t border-gray-200 flex justify-around py-2 shadow-[0_-5px_15px_rgba(0,0,0,0.03)] pointer-events-auto">
+            <button onClick={() => setView('plp')} className="p-2 flex flex-col items-center gap-1"><Home color={view === 'plp' ? theme.primary : '#9CA3AF'} size={20} /> <span className="text-[9px] font-bold" style={{color: view === 'plp' ? theme.primary : '#9CA3AF'}}>Home</span></button>
+            
+            <button onClick={() => setView('cart')} className="relative p-2 flex flex-col items-center gap-1">
+              <ShoppingCart color={view === 'cart' ? theme.primary : '#9CA3AF'} size={20} />
+              {cart.length > 0 && <span className="absolute top-0 right-1 text-white text-[8px] w-3.5 h-3.5 flex items-center justify-center font-bold border border-white rounded-full" style={{backgroundColor: theme.primary}}>{cart.length}</span>}
+              <span className="text-[9px] font-bold" style={{color: view === 'cart' ? theme.primary : '#9CA3AF'}}>Cart</span>
+            </button>
 
-          <button onClick={() => setView('profile')} className="p-2 flex flex-col items-center gap-1"><User color={view === 'profile' ? theme.primary : '#9CA3AF'} size={20} /> <span className="text-[9px] font-bold" style={{color: view === 'profile' ? theme.primary : '#9CA3AF'}}>Profile</span></button>
-        </nav>
+            <button onClick={() => { if(currentUser) { fetchMyOrders(); setView('orders'); } else { alert("Login to view orders"); setView('auth_phone'); } }} className="p-2 flex flex-col items-center gap-1">
+              <ClipboardList color={view === 'orders' ? theme.primary : '#9CA3AF'} size={20} /> 
+              <span className="text-[9px] font-bold" style={{color: view === 'orders' ? theme.primary : '#9CA3AF'}}>Orders</span>
+            </button>
+
+            <button onClick={() => setView('profile')} className="p-2 flex flex-col items-center gap-1"><User color={view === 'profile' ? theme.primary : '#9CA3AF'} size={20} /> <span className="text-[9px] font-bold" style={{color: view === 'profile' ? theme.primary : '#9CA3AF'}}>Profile</span></button>
+          </nav>
+          
+        </div>
       )}
 
       {/* Global CSS for standard Inputs and Premium Animations */}
