@@ -4,13 +4,16 @@ import Razorpay from 'razorpay';
 
 export async function POST(req: Request) {
   try {
+    const body = await req.json(); // 🌟 FIX: Frontend se dynamic amount aayega
+    const paymentAmount = body.amount || 100; // Fallback to 100 if missing
+
     const instance = new Razorpay({
-      key_id: 'rzp_live_Sm6dnONggYc7iv', // 👉 IMPORTANT: Ise replace karna!
-      key_secret: 'ASu4P8VbERO1nYKZ7bX35AA7', // 👉 IMPORTANT: Ise replace karna!
+      key_id: 'rzp_live_Sm6dnONggYc7iv', 
+      key_secret: 'ASu4P8VbERO1nYKZ7bX35AA7', 
     });
 
     const options = {
-      amount: 100 * 100, // ₹100 ko paise (10000) mein convert kiya hai
+      amount: Math.round(paymentAmount * 100), // Rupees ko paise mein convert kiya
       currency: "INR",
       receipt: `rcpt_${Date.now()}`
     };

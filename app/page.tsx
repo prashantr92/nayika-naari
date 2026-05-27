@@ -42,6 +42,9 @@ const loadRazorpayScript = (): Promise<boolean> => {
   });
 };
 
+// 🌟 NAYA: Global Rounding Function (1 Decimal)
+const round1 = (num: any) => Number(Number(num || 0).toFixed(1));
+
 const safeParseJSON = (data: any, fallback: any) => {
   if (!data) return fallback;
   if (typeof data === 'object') return data;
@@ -101,7 +104,8 @@ const getOptimizedImgUrl = (originalUrl, viewType = 'plp') => {
 };
 
 // 🌟 NAYA: Memoized Product Card (App Hang Hone Se Bachayega)
-const ProductCard = memo(({ p, openPDP }: { p: any, openPDP: (p: any) => void }) => {
+const ProductCard = memo(({ p, packCharge, openPDP }: { p: any, packCharge: number, openPDP: (p: any) => void }) => {
+  const finalCost = round1(Number(p.cost || 0) + packCharge); // 🌟 FIX: Rounded
   const imgData = safeParseJSON(p.img, { images: [] });
   const metaData = safeParseJSON(p.meta, {});
   const boxSize = metaData?.attributes?.box_size?.[0] || 6;
@@ -128,13 +132,13 @@ const ProductCard = memo(({ p, openPDP }: { p: any, openPDP: (p: any) => void })
         </p>
         <div className="mt-1.5 flex flex-col gap-1">
           <div className="flex items-center gap-1.5">
-            <p className="font-black text-[15px] text-gray-900 leading-none">₹{p.cost}</p>
-            {/* 🌟 NAYA LOGIC: Agar MRP maujood hai aur Cost se badi hai, tabhi ye tag dikhega */}
-{p.mrp && p.mrp > p.cost && (
-  <span className="text-[12px] font-bold leading-none tracking-tight" style={{color: theme.offer}}>
-    ({Math.round(((p.mrp - p.cost) / p.mrp) * 100)}% OFF)
-  </span>
-)}
+            <p className="font-black text-[15px] text-gray-900 leading-none">₹{finalCost}</p>
+            {/* 🌟 FIX: Show % OFF only if MRP exists AND is strictly greater than Final Cost (Cost + PackCharge) */}
+            {p.mrp > 0 && p.mrp > finalCost && (
+              <span className="text-[12px] font-bold leading-none tracking-tight" style={{color: theme.offer}}>
+                ({Math.round(((p.mrp - finalCost) / p.mrp) * 100)}% OFF)
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -164,6 +168,7 @@ export default function NayikaNaariApp() {
   const [isAdding, setIsAdding] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
   const [showMaintenance, setShowMaintenance] = useState(true);
+  
 const handleShareProduct = async (product: any, boxSize: number) => {
   setIsSharing(true);
   try {
@@ -188,7 +193,11 @@ const handleShareProduct = async (product: any, boxSize: number) => {
     const descText = product.description ? `\n\n📝 *Details:*\n${product.description}` : '';
 
     // 4. 🌟 Final Message Ready
-    const shareText = `*${product.name}*\n📦 MOQ: ${boxSize} Pcs Box\n💰 Rate: ₹${product.cost} (MRP: ₹${product.mrp})${sizesText}${colorsText}${descText}\n\n👉 View on App:\n${window.location.origin}/?view=pdp&id=${product.id}`;
+    const config = sellerConfigs[product.seller || 'Nayika Naari'] || {};
+    const packVal = Number(config.UnitPackCharge || 0);
+    const packCharge = round1(config.UnitPackChargeType === 'percent' ? (Number(product.cost) * packVal) / 100 : packVal);
+    const shareRate = round1(Number(product.cost) + packCharge); // 🌟 FIX: Rounded
+    const shareText = `*${product.name}*\n📦 MOQ: ${boxSize} Pcs Box\n💰 Rate: ₹${shareRate} (MRP: ₹${product.mrp})${sizesText}${colorsText}${descText}\n\n👉 View on App:\n${window.location.origin}/?view=pdp&id=${product.id}`;
 
     // 5. 🌟 Image fetch karke File object banana
     let shareFiles: File[] = [];
@@ -271,6 +280,36 @@ const handleShareProduct = async (product: any, boxSize: number) => {
   // 🌟 NEW MULTI-SELLER STATES
   const [activeCartSeller, setActiveCartSeller] = useState<string | null>(null);
   const [sellerMovs, setSellerMovs] = useState<Record<string, number>>({});
+  const [sellerConfigs, setSellerConfigs] = useState<Record<string, any>>({});
+
+  const [lastFetchTime, setLastFetchTime] = useState(0);
+
+  // 🌟 NAYA: Smart Config Fetch (Bina DB load badhaye hamesha fresh data)
+  const fetchFreshConfig = async (force = false) => {
+    // Agar force nahi kiya gaya aur 30 sec nahi huye, toh DB call skip karo (Load prevention)
+    if (!force && Date.now() - lastFetchTime < 30000) return; 
+    
+    const { data } = await supabase.from('users').select('name, user_config').not('user_config', 'is', null);
+    if (data) {
+      const configs: Record<string, any> = {};
+      data.forEach((u: any) => {
+        configs[u.name] = typeof u.user_config === 'string' ? safeParseJSON(u.user_config, {}) : (u.user_config || {});
+      });
+      setSellerConfigs(configs);
+      setLastFetchTime(Date.now());
+    }
+  };
+
+  useEffect(() => {
+    fetchFreshConfig(true); // Pehli baar forced fetch
+  }, []);
+
+  // Jab bhi user Cart ya PDP par jayega, implicitly fresh config check hoga
+  useEffect(() => {
+    if (view === 'cart' || view === 'pdp') {
+      fetchFreshConfig(false);
+    }
+  }, [view]);
   const [isSellerSheetOpen, setIsSellerSheetOpen] = useState(false);
 
   useEffect(() => {
@@ -744,18 +783,35 @@ const handleShareProduct = async (product: any, boxSize: number) => {
       if (isOOS) {
           groups[item.id].oosSizes.push(item.selectedSize);
       } else {
+          // 🌟 NAYA: Add Pack Charge live inside Cart (Percent or Absolute)
+          const config = sellerConfigs[item.seller || 'Nayika Naari'] || {};
+          const packVal = Number(config.UnitPackCharge || 0);
+          const packCharge = round1(config.UnitPackChargeType === 'percent' ? (Number(item.cost) * packVal) / 100 : packVal);
+          const extraPrice = round1(sizesRaw[item.selectedSize]?.extra_price || 0);
+          const liveFinalRate = round1(Number(item.cost) + packCharge + extraPrice);
+          const updatedLineCost = round1(liveFinalRate * item.qtyPieces);
+
+          // Ye order placement ke time DB mein save karne ke kaam aayega
+          item.unitPrice = liveFinalRate; 
+          item.totalLineCost = updatedLineCost;
+
           groups[item.id].totalPcs += item.qtyPieces;
           groups[item.id].totalBoxes += Math.ceil(item.qtyPieces / item.boxSize);
-          groups[item.id].totalPrice += item.totalLineCost;
+          groups[item.id].totalPrice += updatedLineCost;
       }
     });
     return Object.values(groups);
   }, [activeCartItems]);
 
-  const cartTotalAmount = groupedCart.reduce((a, b) => a + b.totalPrice, 0);
+  const cartTotalAmount = round1(groupedCart.reduce((a, b) => a + b.totalPrice, 0));
   const minOrderVal = sellerMovs[activeCartSeller || 'Nayika Naari'] || 2500;
   const isMovMet = cartTotalAmount >= minOrderVal;
-  const shippingCharge = 100;
+  
+  // 🌟 NAYA: dynamic config fetch for cart checkout
+  const currentConfig = sellerConfigs[activeCartSeller || 'Nayika Naari'] || {};
+  const shippingCharge = round1(Number(currentConfig.ShippingCharge || 0));
+  const isPrepaid = currentConfig.PaymentMode === 'Prepaid';
+  const advanceToPay = round1(isPrepaid ? (cartTotalAmount + shippingCharge) : shippingCharge);
 
 const processTruckUpdate = (baseProduct: any) => {
     const meta = safeParseJSON(baseProduct.meta, {});
@@ -764,22 +820,27 @@ const processTruckUpdate = (baseProduct: any) => {
     const imgData = safeParseJSON(baseProduct.img, { images: [] });
     const newItems: any[] = [];
     
-    // 🌟 FIX: timestamp wapas add kar diya hai
     const timestamp = getLocalTimestamp();
     
+    // 🌟 FIX: Fetch Pack Charge before saving to DB (Percent or Absolute)
+    const config = sellerConfigs[baseProduct.seller || 'Nayika Naari'] || {};
+    const packVal = Number(config.UnitPackCharge || 0);
+    const packCharge = round1(config.UnitPackChargeType === 'percent' ? (Number(baseProduct.cost) * packVal) / 100 : packVal);
+
     for (const [size, qty] of Object.entries(sizeQuantities)) {
-      // 🌟 FIX: Do not process OOS sizes to save in cart
       const isOOS = sizesRaw[size]?.is_active === false;
       if (qty > 0 && !isOOS) {
-        const extra = sizesRaw[size]?.extra_price || 0;
+        const extra = round1(sizesRaw[size]?.extra_price || 0);
+        const dbFinalRate = round1(Number(baseProduct.cost) + packCharge + extra);
+
         newItems.push({
           ...baseProduct,
           cartId: `${baseProduct.id}-${size}`,
           selectedSize: size,
           qtyPieces: qty,
           boxSize: boxSize,
-          unitPrice: baseProduct.cost + extra,
-          totalLineCost: qty * (baseProduct.cost + extra),
+          unitPrice: dbFinalRate, // 🌟 Updated Live Price
+          totalLineCost: qty * dbFinalRate, // 🌟 Updated Live Price
           displayImg: imgData.images[0] || '',
           seller: baseProduct.seller || 'Nayika Naari',
           updated_at: timestamp
@@ -938,7 +999,7 @@ const processTruckUpdate = (baseProduct: any) => {
     // 🌟 FIX: Address aur city columns wapas add kiye taaki order details mein show ho sakein
     const { data: ordersData, error: ordersError } = await supabase
       .from('orders')
-      .select('id, userid, amount, finalAmount, status, box, pcs, advance, meta, tracking, createdAt, address, city, state, pincode, phone')
+      .select('id, userid, amount, finalAmount, status, box, pcs, advance, meta, tracking, createdAt, address, city, state, pincode, phone, razorpay_amount_paid') // 🌟 FIX: Column add kar diya
       .eq('userid', currentUser.id)
       .order('createdAt', { ascending: false });
 
@@ -986,7 +1047,8 @@ const openOrderDetails = async (order: any) => {
   };
 
   // 🌟 NAYA: Purane Pending Orders ki Payment Handle Karne Ke Liye
-  const handlePendingPayment = async (order: any) => {
+  // 🌟 FIX: Yahan pendingAmount parameter add kiya
+  const handlePendingPayment = async (order: any, pendingAmount: number) => {
     const isScriptLoaded = await loadRazorpayScript();
     if (!isScriptLoaded) {
       alert("Razorpay SDK failed to load. Are you online?");
@@ -997,7 +1059,8 @@ const openOrderDetails = async (order: any) => {
       const response = await fetch('/api/razorpay', { 
          method: 'POST',
          cache: 'no-store', 
-         headers: { 'Pragma': 'no-cache', 'Cache-Control': 'no-cache, no-store, must-revalidate' }
+         headers: { 'Content-Type': 'application/json', 'Pragma': 'no-cache', 'Cache-Control': 'no-cache, no-store, must-revalidate' },
+         body: JSON.stringify({ amount: pendingAmount }) // 🌟 FIX: Ab dynamically calculated pending amount jayega
       });
       const data = await response.json();
       
@@ -1011,14 +1074,25 @@ const openOrderDetails = async (order: any) => {
         amount: data.order.amount,
         currency: data.order.currency,
         name: "Nayika Naari",
-        description: `Advance Payment for Order #${order.id}`,
+        description: "Pending Order Payment",
         order_id: data.order.id, 
+        notes: {
+          order_id: order.id.toString(),
+          payment_mode: safeParseJSON(order.meta, {})?.paymentMode || 'N/A',
+          paid_previously: `₹${Number(order.razorpay_amount_paid) || 0}`,
+          payable_now: `₹${pendingAmount}`,
+          total_order_value: `₹${order.finalAmount || order.amount || 0}`
+        },
         handler: async function (response: any) {
+          const currentPaid = Number(order.razorpay_amount_paid) || 0;
+          const newPaidTotal = currentPaid + pendingAmount;
+
           const { error } = await supabase.from('orders')
             .update({ 
                status: 'Confirmed', 
                advance: 0, 
-               rzp_payment_id: response.razorpay_payment_id // 🌟 NAYA: Yahan bhi ID save karo
+               rzp_payment_id: response.razorpay_payment_id,
+               razorpay_amount_paid: newPaidTotal // 🌟 NAYA: Total paid amount update karo
             })
             .eq('id', order.id);
 
@@ -1027,6 +1101,13 @@ const openOrderDetails = async (order: any) => {
           } else {
              showToast("Payment Successful! Order Confirmed.");
              fetchMyOrders(); // 🌟 Ye turant tumhari order list ko refresh kar dega
+             
+             // 🌟 FIX: Detail page ka UI instantly update karne ke liye
+             setSelectedOrder((prev: any) => 
+               prev && prev.id === order.id 
+                 ? { ...prev, status: 'Confirmed', advance: 0, rzp_payment_id: response.razorpay_payment_id, razorpay_amount_paid: newPaidTotal } 
+                 : prev
+             );
              
              // Admin ko Push Notification (Optional)
              const { data: adminUser } = await supabase.from('users').select('push_token').eq('phone', 9758008624).single();
@@ -1381,6 +1462,14 @@ const handlePlaceOrderClick = async () => {
     setIsPlacingOrder(true); 
     setOrderProgress(5);
 
+    // 🌟 NAYA FIX: Agar COD hai aur Shipping 0 hai (Advance 0), 
+    // toh Razorpay API call nahi hogi, directly Order place ho jayega!
+    if (advanceToPay === 0) {
+      setOrderProgress(50);
+      handlePlaceOrder(false, null);
+      return;
+    }
+
     const isScriptLoaded = await loadRazorpayScript();
     if (!isScriptLoaded) {
       alert("Razorpay SDK failed to load. Are you online?");
@@ -1390,7 +1479,12 @@ const handlePlaceOrderClick = async () => {
 
     try {
       setOrderProgress(15);
-      const response = await fetch('/api/razorpay', { method: 'POST' });
+      // 🌟 NAYA: Razorpay ko exact calculated amount bhejna
+      const response = await fetch('/api/razorpay', { 
+         method: 'POST',
+         headers: { 'Content-Type': 'application/json' },
+         body: JSON.stringify({ amount: advanceToPay }) 
+      });
       const data = await response.json();
       
       if (!data.success) {
@@ -1408,9 +1502,15 @@ const handlePlaceOrderClick = async () => {
         key: "rzp_live_Sm6dnONggYc7iv", // 100% Asli Key
         amount: data.order.amount,
         currency: data.order.currency,
-        name: "Nayika Naari",
-        description: "Advance Shipping Payment",
+       name: "Nayika Naari",
+        description: "New Order Checkout",
         order_id: data.order.id, // Backend se aayi ID
+        notes: {
+          order_id: "Pending Creation", 
+          payment_mode: isPrepaid ? 'Prepaid' : 'COD',
+          payable_now: `₹${advanceToPay}`,
+          total_order_value: `₹${cartTotalAmount + shippingCharge}`
+        },
         handler: function (response: any) {
           // 🎉 SUCCESS: Payment done
          handlePlaceOrder(true, response.razorpay_payment_id);
@@ -1487,15 +1587,22 @@ const handlePlaceOrder = async (paymentSuccess: boolean = false, rzpPaymentId: s
       const totalBoxes = groupedCart.reduce((a, b) => a + b.totalBoxes, 0);
       const orderAmount = cartTotalAmount; 
 
-      // 1. ORDER CREATE
       const { data: order, error } = await supabase.from('orders').insert([{
         userid: currentUser.id, pincode: addressData.pincode, city: addressData.city, state: addressData.state,
         address: addressData.address, phone: addressData.mobile, box: totalBoxes, pcs: totalPcs,
         status: paymentSuccess ? 'Confirmed' : 'Pending', 
-        rzp_payment_id: rzpPaymentId, //
-        amount: orderAmount, finalAmount: orderAmount, 
-        advance: paymentSuccess ? 0 : shippingCharge, 
-        meta: { screenshot_uploaded: paymentSuccess ? true : false, sellerName: activeCartSeller }
+        rzp_payment_id: rzpPaymentId, 
+        amount: orderAmount, 
+        finalAmount: orderAmount + shippingCharge, 
+        advance: paymentSuccess ? advanceToPay : 0, 
+        razorpay_amount_paid: paymentSuccess ? advanceToPay : 0, // 🌟 FIX: Checkout time par bhi paid amount DB me dalna zaruri hai
+        meta: { 
+           screenshot_uploaded: paymentSuccess ? true : false, 
+           sellerName: activeCartSeller, 
+           paymentMode: currentConfig.PaymentMode, 
+           shippingCharge: shippingCharge,
+           expectedAdvance: advanceToPay // 🌟 NAYA: Order total kitna pay hona chahiye tha start mein
+        }
       }]).select().single();
 
       if (error) throw error;
@@ -1594,10 +1701,10 @@ const handlePlaceOrder = async (paymentSuccess: boolean = false, rzpPaymentId: s
       msg += `------------------------\n*Total Amount:* ₹${orderAmount}/-`;
       
       if (paymentSuccess) {
-        msg += `\n*Advance:* ₹100 Paid Online ✅`;
+        msg += `\n*Advance:* ₹${advanceToPay} Paid Online ✅`;
       } else if (shippingCharge > 0) {
-        msg += `\n*Advance:* ₹${shippingCharge}/- (Pending ❌)`;
-        msg += `\n\n_Please pay ₹100 using app to confirm order._`;
+        msg += `\n*Advance:* ₹${advanceToPay}/- (Pending ❌)`;
+        msg += `\n\n_Please pay ₹${advanceToPay} using app to confirm order._`;
       }
       
       const myWebsiteUrl = window.location.origin;
@@ -2145,9 +2252,12 @@ if (view === 'splash') return (
           {loading ? <div className="flex justify-center py-20"><Loader2 className="animate-spin" color={theme.primary} size={32} /></div> : filteredProducts.length === 0 ? <p className="text-center text-gray-400 text-sm py-20 bg-white">No products found.</p> : (
               <div className="grid grid-cols-2 gap-[1px] bg-gray-200 border-b border-gray-200">
                 {/* 🌟 NAYA: Memoized card use kiya gaya hai. Speed ab 10x fast hogi! */}
-                {filteredProducts.map((p) => (
-                   <ProductCard key={p.id} p={p} openPDP={openPDP} />
-                ))}
+                {filteredProducts.map((p) => {
+                   const config = sellerConfigs[p.seller || 'Nayika Naari'] || {};
+                   const packVal = Number(config.UnitPackCharge || 0);
+                   const packCharge = round1(config.UnitPackChargeType === 'percent' ? (Number(p.cost || 0) * packVal) / 100 : packVal);
+                   return <ProductCard key={p.id} p={p} packCharge={packCharge} openPDP={openPDP} />;
+                })}
               </div>
             )}
           </div>
@@ -2170,9 +2280,14 @@ if (view === 'splash') return (
           const getExtraPrice = (s: string) => Array.isArray(sizesRaw) ? 0 : (sizesRaw[s]?.extra_price || 0);
           const boxSize = metaData?.attributes?.box_size?.[0] || 6;
           
+          const config = sellerConfigs[selectedProduct.seller || 'Nayika Naari'] || {};
+          const packVal = Number(config.UnitPackCharge || 0);
+          const packCharge = config.UnitPackChargeType === 'percent' ? (Number(selectedProduct.cost) * packVal) / 100 : packVal;
+          const finalCost = Number(selectedProduct.cost) + packCharge; // 🌟 NAYA: Cost + Unit Pack
+
           let currentTotal = 0;
           for (const [size, qtyPieces] of Object.entries(sizeQuantities)) {
-            if (qtyPieces > 0) currentTotal += qtyPieces * (selectedProduct.cost + getExtraPrice(size));
+            if (qtyPieces > 0) currentTotal += qtyPieces * (finalCost + getExtraPrice(size));
           }
 
           const descLines = selectedProduct.description ? selectedProduct.description.split(/\\n|\n/).filter((l: string) => l.trim() !== "") : [];
@@ -2186,9 +2301,9 @@ if (view === 'splash') return (
                  </div>
                  <div className="flex overflow-x-auto snap-x snap-mandatory scrollbar-hide" onScroll={e => setCurrentImgIndex(Math.round(e.currentTarget.scrollLeft / e.currentTarget.clientWidth))}>
                    {imgData.images.map((img: string, idx: number) => (
-                     // 🌟 FIX: 'relative' add kiya aur priority true for first image
-                    <div key={idx} onClick={() => setZoomOverlay({images: imgData.images.map((i: string) => getOptimizedImgUrl(i, 'pdp')), currentIndex: idx})} className="relative snap-center shrink-0 w-full h-[250px] flex items-center justify-center cursor-zoom-in bg-white p-2">
-  {img && <Image src={getOptimizedImgUrl(img, 'pdp')} alt="Product" fill sizes="100vw" priority={idx === 0} className="object-contain drop-shadow-sm mix-blend-multiply p-3" />}
+                    // 🌟 FIX: Premium Taller Image Layout (Edge-to-Edge)
+                    <div key={idx} onClick={() => setZoomOverlay({images: imgData.images.map((i: string) => getOptimizedImgUrl(i, 'pdp')), currentIndex: idx})} className="relative snap-center shrink-0 w-full h-[65vh] max-h-[600px] flex items-center justify-center cursor-zoom-in bg-[#F8F9FA]">
+  {img && <Image src={getOptimizedImgUrl(img, 'pdp')} alt="Product" fill sizes="100vw" priority={idx === 0} className="object-cover mix-blend-multiply" />}
 </div>
                    ))}
                  </div>
@@ -2197,16 +2312,17 @@ if (view === 'splash') return (
               <div className="bg-white border-b border-gray-200 flex flex-col">
                 <div className="px-4 py-3 flex items-center justify-between border-b border-gray-100">
                   <div className="flex items-center gap-2">
-                    <p className="text-[26px] font-black text-gray-900 leading-none">₹{selectedProduct.cost}</p>
-                    {selectedProduct.mrp && selectedProduct.mrp > selectedProduct.cost && (
-  <div className="flex flex-col justify-center mt-1">
-    <p className="text-[14px] text-gray-400 line-through font-bold leading-none">MRP ₹{selectedProduct.mrp}</p>
-    <span className="bg-[#E5F7ED] text-[#008A00] px-1 py-[2px] rounded text-[12px] font-black tracking-wider leading-none mt-1 w-fit">
-      {/* 🌟 NAYA LOGIC: Database ke discount par depend na karke on-the-spot calculate hoga */}
-      {Math.round(((selectedProduct.mrp - selectedProduct.cost) / selectedProduct.mrp) * 100)}% OFF
-    </span>
-  </div>
-)}
+                    <p className="text-[26px] font-black text-gray-900 leading-none">₹{finalCost}</p>
+                    {/* 🌟 FIX: MRP 0 se zyada ho aur FinalCost (Cost+PackCharge) se badi ho tabhi dikhega */}
+                    {selectedProduct.mrp > 0 && selectedProduct.mrp > finalCost && (
+                      <div className="flex flex-col justify-center mt-1">
+                        <p className="text-[14px] text-gray-400 line-through font-bold leading-none">MRP ₹{selectedProduct.mrp}</p>
+                        <span className="bg-[#E5F7ED] text-[#008A00] px-1 py-[2px] rounded text-[12px] font-black tracking-wider leading-none mt-1 w-fit">
+                          {/* 🌟 NAYA LOGIC: Discount calculation ab (MRP - FinalCost) par chalegi */}
+                          {Math.round(((selectedProduct.mrp - finalCost) / selectedProduct.mrp) * 100)}% OFF
+                        </span>
+                      </div>
+                    )}
                   </div>
                   {/* 🌟 NAYA: Share button next to MOQ */}
                   <div className="flex items-center gap-2">
@@ -2483,10 +2599,16 @@ if (view === 'splash') return (
                        <div className="p-3 flex justify-between items-center w-full gap-2">
   <div className="flex flex-col ml-1 flex-1 pr-2">
     <span className="font-black text-gray-800 text-[13px]">
-     Item Subtotal (₹{cartTotalAmount})
+     {/* 🌟 FIX: Agar shipping > 0 hai toh text ke aage auto-append ho jayega */}
+     Item Subtotal (₹{cartTotalAmount}){shippingCharge > 0 ? ` + Shipping ₹${shippingCharge}` : ''}
     </span>
     <span className="font-semibold text-gray-500 text-[10px] leading-tight mt-0.5">
-      Order will be confirmed after Shipping Payment only
+      {/* 🌟 NAYA: Dynamic Subtext based on cases */}
+      {isPrepaid 
+        ? "Order will be confirmed after full online payment."
+        : shippingCharge > 0 
+          ? `Order will be confirmed after ₹${shippingCharge} shipping payment.`
+          : "100% Cash on Delivery available."}
     </span>
   </div>
 
@@ -2497,7 +2619,14 @@ if (view === 'splash') return (
       style={isMovMet ? {backgroundColor: theme.primary} : {}}
     >
       <span className="font-black uppercase tracking-widest text-[12px]">Place Order</span>
-      <span className="text-[9px] font-bold mt-0.5 tracking-wider opacity-90">Pay ₹100 Shipping</span>
+      <span className="text-[9px] font-bold mt-0.5 tracking-wider opacity-90">
+       {/* 🌟 NAYA: Dynamic Button Text based on cases */}
+       {isPrepaid 
+         ? `Pay ₹${advanceToPay}` 
+         : shippingCharge > 0 
+           ? `Pay ₹${advanceToPay} (Shipping)`
+           : `Place COD Order`}
+      </span>
     </button>
   </div>
 </div>
@@ -2532,6 +2661,12 @@ if (view === 'splash') return (
                   const finalAmt = (o.finalAmount !== null && o.finalAmount !== undefined) ? o.finalAmount : o.amount;
                   const isCancelled = o.status === 'Cancelled';
                   
+                  // 🌟 NAYA LOGIC: Pending payment calculate karna
+                  const orderMetaObj = safeParseJSON(o.meta, {});
+                  const expectedAdvance = orderMetaObj?.expectedAdvance || o.advance || 0;
+                  const amountPaid = Number(o.razorpay_amount_paid) || 0;
+                  const pendingAmount = expectedAdvance - amountPaid;
+
                   const allImages = (o.order_details || []).map((item: any) => safeParseJSON(item.meta, {})?.img).filter(Boolean);
                   const uniqueImages = Array.from(new Set(allImages));
                   const previewImages = uniqueImages.slice(0, 5);
@@ -2598,20 +2733,20 @@ if (view === 'splash') return (
 
                      {/* 🌟 FIX: Purane GPay/PhonePe hta kar Razorpay laga diya */}
                       {/* 🌟 FIX: advance 100 ki jagah > 0 kar diya */}
-{o.status === 'Pending' && o.advance > 0 && (
+{o.status === 'Pending' && pendingAmount > 0 && (
                          <div className="mb-3 flex flex-col gap-2.5 bg-red-50 p-3 rounded-xl border border-red-100">
                            <p className="text-[11px] font-bold text-[#FF3F6C] text-center leading-tight">
-                             Confirm your order by paying ₹100 advance
+                             Confirm your order by paying ₹{pendingAmount} {orderMetaObj?.paymentMode === 'Prepaid' ? 'online' : 'shipping'}
                            </p>
                            
                            <button onClick={(e) => {
-                               e.stopPropagation(); // 🌟 Zaroori: Isse card par click hone se 'Order Detail' open nahi hoga
-                               handlePendingPayment(o);
+                               e.stopPropagation(); 
+                               handlePendingPayment(o, pendingAmount); // 🌟 Pending amount pass kar rahe hain
                              }} 
                              className="w-full bg-gray-900 text-white py-2.5 rounded-lg text-[11px] font-black cursor-pointer active:scale-95 transition-transform flex justify-center items-center gap-2 shadow-sm"
                            >
                              <img src="https://razorpay.com/favicon.png" className="w-3.5 h-3.5 invert" alt="rzp" />
-                             Pay ₹100 via Razorpay
+                             Pay ₹{pendingAmount} via Razorpay
                            </button>
                          </div>
                       )}
@@ -2624,11 +2759,12 @@ if (view === 'splash') return (
           </div>
         )}
 
-        {view === 'order_detail' && selectedOrder && (() => {
+      {view === 'order_detail' && selectedOrder && (() => {
           const isCancelled = selectedOrder.status === 'Cancelled';
           const isPending = selectedOrder.status === 'Pending';
           const orderMeta = safeParseJSON(selectedOrder.meta, {});
           
+          // 1. Total items value (from remainingQty * rate)
           let currentCalc = 0;
           if (orderItems.length === 0) {
             currentCalc = selectedOrder.amount || 0; 
@@ -2639,32 +2775,42 @@ if (view === 'splash') return (
             });
           }
 
+         // 2. Add Shipping to get Final Total (Rounded)
+          const shippingCharge = round1(Number(orderMeta?.shippingCharge) || 0);
+          const totalOrderValue = round1(currentCalc + shippingCharge);
+
+          // 3. Amount Paid online (Rounded)
+          const amountPaid = round1(Number(selectedOrder.razorpay_amount_paid) || 0);
+          
+          // 4. Payable amount (Total - Paid). Clamped to 0 minimum (Rounded)
+          const payableAmount = Math.max(0, round1(totalOrderValue - amountPaid));
+          
+          // 4. Pending advance for Checkout Button logic
+          const expectedAdvance = orderMeta?.expectedAdvance || selectedOrder.advance || 0;
+          const pendingAdvanceToConfirm = expectedAdvance - amountPaid;
+
           return (
             <div className="animate-in slide-in-from-right duration-300 flex flex-col min-h-full bg-[#F8F9FA] pb-24">
               <div className="bg-white p-4 border-b border-gray-200 shadow-sm">
-                <div className="flex justify-between items-start mb-4">
-                  <div>
-                    <span className={`text-sm font-black uppercase tracking-widest px-3 py-1.5 rounded-lg border ${
+                <div className="flex justify-between items-center mb-4">
+                  <div className="flex items-center gap-2">
+                    <span className={`text-[11px] font-black uppercase tracking-widest px-3 py-1.5 rounded-md border ${
                       selectedOrder.status === 'Dispatched' ? 'bg-blue-50 text-blue-600 border-blue-200' : 
                       selectedOrder.status === 'Delivered' ? 'bg-[#E5F7ED] text-[#008A00] border-[#C2EED7]' : 
-                      isCancelled ? 'bg-red-50 text-red-600 border-red-200' : 'bg-orange-50 text-orange-600 border-orange-200'
+                      isCancelled ? 'bg-red-50 text-red-600 border-red-200' : 'bg-orange-50 text-[#D95D1A] border-[#FFE8D6]'
                     }`}>
                       {selectedOrder.status}
                     </span>
-                    <p className="text-sm text-gray-500 font-bold mt-3">{safeFormatDate(selectedOrder.createdAt)}</p>
-                    <span className="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded text-[9px] font-bold border border-gray-200">
-                               Sold By: {safeParseJSON(selectedOrder.meta, {})?.sellerName || 'Nayika Naari'}
-                            </span>
+                    <span className="bg-gray-100 text-gray-600 px-2 py-1 rounded text-[10px] font-bold border border-gray-200">
+                       Sold By: {orderMeta?.sellerName || 'Nayika Naari'}
+                    </span>
                   </div>
-                  
                   <div className="text-right">
-                    <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">Items Total</p>
-                    <p className={`font-black text-2xl mt-0.5 ${isCancelled ? 'text-gray-400 line-through' : 'text-gray-900'}`}>₹{currentCalc}/-</p>
-                    {currentCalc !== selectedOrder.amount && !isCancelled && <p className="text-xs text-orange-500 font-bold bg-orange-50 px-2 py-0.5 rounded inline-block mt-1">Orig: ₹{selectedOrder.amount}</p>}
+                    <p className="text-xs text-gray-600 font-bold">{safeFormatDate(selectedOrder.createdAt)}</p>
                   </div>
                 </div>
 
-                <div className="mt-2 mx-4 bg-gray-50 p-4 rounded-xl border border-gray-200 shadow-sm">
+                <div className="bg-gray-50 p-4 rounded-xl border border-gray-200 shadow-sm">
                   <h3 className="text-[10px] font-black text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-1">
                     <MapPin size={12} /> Delivery Details
                   </h3>
@@ -2700,46 +2846,44 @@ if (view === 'splash') return (
               </div>
 
               {isPending && (
-                <div className="p-4 bg-white border-b border-gray-200 flex flex-col gap-3">
-                   <div className="flex justify-between items-center bg-orange-50 p-3 rounded-xl border border-orange-100">
-                      <div className="flex flex-col">
-                        <span className="text-[11px] font-bold text-orange-800">Order is not confirmed yet.</span>
-                        <span className="text-[9px] font-medium text-orange-600">You can cancel or update payment info.</span>
+                <div className="p-4 bg-white border-b border-gray-200">
+                   <div className="flex justify-between items-center bg-[#FFF8F2] p-4 rounded-xl border border-[#FFE8D6]">
+                      <div className="flex flex-col flex-1 pr-2">
+                        <span className="text-xs font-bold text-[#D95D1A]">Confirmation Pending.</span>
+                       
                       </div>
-                      <button onClick={cancelOrder} disabled={isCancelling} className="text-[10px] font-black text-red-600 bg-white border border-red-200 px-3 py-1.5 rounded-lg active:scale-95 flex items-center gap-1">
-                        {isCancelling ? <Loader2 size={12} className="animate-spin" /> : <Ban size={12} />} Cancel
-                      </button>
-                   </div>
-                   
-                <div className="flex items-center justify-between bg-gray-50 p-3 rounded-xl border border-gray-200 overflow-x-auto">
-                      <div className="flex flex-col flex-1 min-w-[120px] mr-2">
-                         <span className="text-[10px] font-bold text-gray-700 uppercase tracking-wider mb-0.5">Pay Online</span>
-                         {orderMeta.screenshot_uploaded ? (
-                           <a href={orderMeta.screenshot_uploaded === true ? '#' : orderMeta.screenshot_uploaded} target="_blank" className="text-[11px] font-bold text-blue-600 underline">View SS</a>
-                         ) : (
-                           <span className="text-[10px] text-red-500 font-bold flex items-center gap-1"><AlertCircle size={10}/>SS Not Uploaded</span>
-                         )}
+                      <div className="flex items-center gap-2 shrink-0">
+                        {pendingAdvanceToConfirm > 0 && (
+                          <button 
+                            onClick={() => handlePendingPayment(selectedOrder, pendingAdvanceToConfirm)} 
+                            className="bg-[#1C2030] text-white px-3 py-2 rounded-lg text-[10px] font-bold cursor-pointer active:scale-95 transition-transform flex items-center gap-1.5 shadow-sm whitespace-nowrap"
+                          >
+                             <img src="https://razorpay.com/favicon.png" className="w-3 h-3 invert" alt="rzp" />
+                             Pay ₹{pendingAdvanceToConfirm} {orderMeta?.paymentMode === 'Prepaid' ? 'online' : 'shipping'} to confirm
+                          </button> 
+                        )}
+                        <button onClick={cancelOrder} disabled={isCancelling} className="text-[10px] font-bold text-[#FF3F6C] bg-white border border-[#FFE4EB] px-3 py-2 rounded-lg active:scale-95 flex items-center gap-1.5 shadow-sm whitespace-nowrap">
+                          {isCancelling ? <Loader2 size={12} className="animate-spin" /> : <Ban size={12} />} Cancel
+                        </button>
                       </div>
-                      
-                      <div className="shrink-0 flex items-center gap-2">
-   {/* 🌟 FIX: Sahi function pass kiya */}
-   <button 
-     onClick={() => handlePendingPayment(selectedOrder)} 
-     className="bg-gray-900 text-white px-4 py-2.5 rounded-lg text-[10px] font-black cursor-pointer active:scale-95 transition-transform flex items-center gap-2 shadow-sm"
-   >
-      <img src="https://razorpay.com/favicon.png" className="w-3 h-3 invert" />
-      Pay ₹100 Shipping to confirm order
-   </button>
-   
-   <input type="file" id="update-ss" className="hidden" accept="image/*" onChange={uploadOrderScreenshot} />
-   {/* Screenshot wala button optional rakh sakte ho fallback ke liye */}
-</div>
                    </div>
                 </div>
               )}
 
               <div className="p-4 space-y-4">
-                <h3 className="font-black text-gray-800 text-xs uppercase tracking-widest flex items-center gap-2"><Package size={16}/> Items Breakdown</h3>
+                <h3 className="font-black text-gray-900 text-sm uppercase tracking-widest flex flex-wrap items-center justify-between gap-y-2">
+                  <div className="flex items-center gap-2"><Package size={18}/> ITEMS</div>
+                  <div className="text-[12px] normal-case tracking-normal font-bold flex flex-wrap items-center gap-y-1">
+                    <span className="text-gray-900">
+                      Total : {totalOrderValue}/-
+                      {shippingCharge > 0 && <span className="text-[10px] text-gray-500 font-medium ml-1">(Shipping ₹{shippingCharge})</span>}
+                    </span> 
+                    <span className="text-gray-400 mx-1.5">|</span> 
+                    <span className="text-gray-900">Paid : {amountPaid}/-</span> 
+                    <span className="text-gray-400 mx-1.5">|</span> 
+                    <span className="text-gray-900">Payable : {payableAmount}/-</span>
+                  </div>
+                </h3>
                 
                 {loading ? ( <div className="flex justify-center py-10"><Loader2 className="animate-spin text-gray-400" size={24} /></div> ) : orderItems.length === 0 ? (
                   <p className="text-center text-xs font-bold text-gray-400">Items detail not available.</p>
@@ -2988,11 +3132,14 @@ if (view === 'splash') return (
         const getExtraPrice = (s: string) => Array.isArray(sizesRaw) ? 0 : (sizesRaw[s]?.extra_price || 0);
         const boxSize = metaData?.attributes?.box_size?.[0] || 6;
         
+        // 🌟 NAYA: Edit Sheet Total mein Pack Charge bhi judega
+        const config = sellerConfigs[productData.seller || 'Nayika Naari'] || {};
+        const packVal = Number(config.UnitPackCharge || 0);
+        const packCharge = config.UnitPackChargeType === 'percent' ? (Number(productData.cost) * packVal) / 100 : packVal;
         let editSheetTotal = 0;
         for (const [size, qtyPieces] of Object.entries(sizeQuantities)) {
-          // 🌟 FIX: Ignore OOS sizes from Total calculation
           if (qtyPieces > 0 && !editingGroup.oosSizes?.includes(size)) {
-             editSheetTotal += qtyPieces * (productData.cost + getExtraPrice(size));
+             editSheetTotal += qtyPieces * (productData.cost + packCharge + getExtraPrice(size));
           }
         }
 
@@ -3008,7 +3155,21 @@ if (view === 'splash') return (
                    </div>
                    <div>
                       <h4 className="font-black text-gray-900 text-base leading-tight pr-4 mb-1">{editingGroup.subcategory}- {editingGroup.name}</h4>
-                      <p className="font-black text-gray-900 text-xl">₹{productData.cost} <span className="text-sm font-bold text-gray-400 line-through">₹{productData.mrp}</span></p>
+                      {/* 🌟 FIX: Edit Sheet Header mein dynamic Pack Charge aur conditional MRP rules add kiye */}
+                      {(() => {
+                         const config = sellerConfigs[productData.seller || 'Nayika Naari'] || {};
+                         const packVal = Number(config.UnitPackCharge || 0);
+                         const packCharge = config.UnitPackChargeType === 'percent' ? (Number(productData.cost) * packVal) / 100 : packVal;
+                         const finalCost = Number(productData.cost || 0) + packCharge;
+                         return (
+                           <p className="font-black text-gray-900 text-xl">
+                             ₹{finalCost}{' '}
+                             {productData.mrp > 0 && productData.mrp > finalCost && (
+                               <span className="text-sm font-bold text-gray-400 line-through">₹{productData.mrp}</span>
+                             )}
+                           </p>
+                         );
+                      })()}
                    </div>
                    <button onClick={() => setActiveSheet('none')} className="ml-auto w-9 h-9 rounded-full bg-gray-100 flex items-center justify-center text-gray-600 hover:bg-gray-200 shrink-0"><X size={18}/></button>
                 </div>

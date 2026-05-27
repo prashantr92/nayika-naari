@@ -14,6 +14,9 @@ import {
 } from 'lucide-react';
 import Image from 'next/image'; // 🌟 NAYA: Image Optimization ke liye
 
+// 🌟 NAYA: Global Rounding Function (1 Decimal)
+const round1 = (num: any) => Number(Number(num || 0).toFixed(1));
+
 const safeParseJSON = (data: any, fallback: any) => {
   if (!data) return fallback;
   if (typeof data === 'object') return data;
@@ -134,7 +137,8 @@ export default function SellerDashboard() {
 
   const [isEditMode, setIsEditMode] = useState(false);
   const [editingProductId, setEditingProductId] = useState<number | null>(null);
-  const [uploadForm, setUploadForm] = useState({ name: '', subcategory: '', mrp: '', cost: '', description: '', boxSize: '6' });
+// 🌟 NAYA: tags array add kiya
+  const [uploadForm, setUploadForm] = useState<{name: string, subcategory: string, mrp: string, cost: string, description: string, boxSize: string, tags: string[]}>({ name: '', subcategory: '', mrp: '', cost: '', description: '', boxSize: '6', tags: [] });
   const [uploadImages, setUploadImages] = useState<File[]>([]);
   const [uploadImagePreviews, setUploadImagePreviews] = useState<string[]>([]);
   const [existingImages, setExistingImages] = useState<string[]>([]);
@@ -167,8 +171,15 @@ export default function SellerDashboard() {
 
   const calculateFinalRate = (product: any, sizeName: string, userObj: any) => {
     const productMeta = safeParseJSON(product.meta, {});
-    const extraPrice = Number(productMeta?.attributes?.available_sizes?.[sizeName]?.extra_price || 0);
-    const baseCost = Number(product.cost || 0) + extraPrice; 
+    const extraPrice = round1(Number(productMeta?.attributes?.available_sizes?.[sizeName]?.extra_price || 0));
+    
+    // 🌟 NAYA: Rounded calculations for Manual Order, Edit & Cancel
+    const userConfig = typeof currentUser?.user_config === 'string' ? safeParseJSON(currentUser.user_config, {}) : (currentUser?.user_config || {});
+    const packVal = Number(userConfig.UnitPackCharge || 0);
+    const packCharge = round1(userConfig.UnitPackChargeType === 'percent' ? (Number(product.cost || 0) * packVal) / 100 : packVal);
+
+    const baseCost = round1(Number(product.cost || 0) + extraPrice + packCharge); 
+    
     const discountPercent = Number(userObj?.discount_percent || safeParseJSON(userObj?.meta, {})?.discount_percent || 0);
     const discountAmount = baseCost * (discountPercent / 100);
     const finalRate = baseCost - discountAmount;
@@ -535,8 +546,12 @@ const handleProductToggle = async (product: any) => {
       itemDetailsStr += `- ${item.product.name} (${item.size}) x ${item.qty} : ₹${lineTotal} (New)\n`;
     });
     if (orderItems.length === 0 && newOrderItems.length === 0) calculatedTotal = selectedOrder.amount;
+    
+    // 🌟 FIX: Shipping charge rounded
+    const shipCharge = round1(safeParseJSON(selectedOrder.meta, {}).shippingCharge || 0);
+    const finalAmtWithShip = round1(calculatedTotal + shipCharge);
 
-    let fullMsg = `New Order Placed!\nOrder ID: *#${selectedOrder.id}*\n\n*Items:*\n${itemDetailsStr}\n*Total Amount:* ₹${Math.round(calculatedTotal)}/-\n\n*Buyer Details:*\nName: ${selectedOrder.buyerName}\nPhone: ${selectedOrder.phone}\nCity: ${selectedOrder.city}\n\n(Please check stock & confirm dispatch)`;
+    let fullMsg = `Order Details!\nOrder ID: *#${selectedOrder.id}*\n\n*Items:*\n${itemDetailsStr}\n*Shipping Charge:* ₹${shipCharge}\n*Total Amount:* ₹${Math.round(finalAmtWithShip)}/-\n\n*Buyer Details:*\nName: ${selectedOrder.buyerName}\nPhone: ${selectedOrder.phone}\nCity: ${selectedOrder.city}\n\n(Please check stock & confirm dispatch)`;
     window.location.href = getWhatsAppLink('', fullMsg);
   };
 
@@ -725,11 +740,19 @@ const handleProductToggle = async (product: any) => {
   };
 
  const handleCategoryChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    setUploadForm(prev => ({ ...prev, subcategory: e.target.value }));
-    const category = categories.find(c => c.name === e.target.value);
+    const catName = e.target.value;
+    const category = categories.find(c => c.name === catName);
+    
+    setUploadForm(prev => ({ 
+      ...prev, 
+      subcategory: catName,
+      // 🌟 NAYA: Category se default MOQ uthao (fallback 6) aur purane tags reset karo
+      boxSize: category?.default_moq ? category.default_moq.toString() : '6',
+      tags: [] 
+    }));
+    
     if (category) {
       const initialSizeConfig: any = {};
-      // 🌟 FIX: Default stock 0 aur is_active false rahega
       safeParseJSON(category.sizes, []).forEach((size: string) => { initialSizeConfig[size] = { extra_price: 0, is_active: false, stock: 0 }; });
       setSizeConfig(initialSizeConfig);
     } else setSizeConfig({});
@@ -746,7 +769,7 @@ const handleProductToggle = async (product: any) => {
   const removeNewImage = (index: number) => { setUploadImages(prev => prev.filter((_, i) => i !== index)); setUploadImagePreviews(prev => prev.filter((_, i) => i !== index)); };
   const removeExistingImage = (index: number) => { setExistingImages(prev => prev.filter((_, i) => i !== index)); };
 
- // 🌟 NAYA: Image Compression Helper (Bina quality lose kiye size chota karega)
+ // 🌟 FIX: Optimal E-commerce Compression (Bina visual quality loss ke maximum size reduction)
   const compressImage = (file: File): Promise<File> => {
     return new Promise((resolve) => {
       const reader = new FileReader();
@@ -756,9 +779,10 @@ const handleProductToggle = async (product: any) => {
         img.src = event.target?.result as string;
         img.onload = () => {
           const canvas = document.createElement('canvas');
-          // Max dimension 1200px rakha hai jo e-commerce ke liye best aur ultra-sharp hota hai
-          const MAX_WIDTH = 1200; 
-          const MAX_HEIGHT = 1600;
+          
+          // 🌟 NAYA: Standard HD Mobile Resolution (Zoom ke liye perfect aur size mein chota)
+          const MAX_WIDTH = 1080; 
+          const MAX_HEIGHT = 1440;
           let width = img.width;
           let height = img.height;
 
@@ -773,18 +797,25 @@ const handleProductToggle = async (product: any) => {
           canvas.width = width;
           canvas.height = height;
           const ctx = canvas.getContext('2d');
-          ctx?.drawImage(img, 0, 0, width, height);
           
-          // Image ko modern WEBP format mein convert karega 85% high quality ke sath (Sabse chota size)
+          if (ctx) {
+             // 🌟 NAYA: Resizing ke waqt sharpness maintain rakhne ke liye strict instructions
+             ctx.imageSmoothingEnabled = true;
+             ctx.imageSmoothingQuality = 'high';
+             ctx.drawImage(img, 0, 0, width, height);
+          }
+          
+          // 🌟 NAYA: Quality 0.80 set ki hai. WebP mein 0.80 par visual difference nahi aata, 
+          // par size 450KB se seedha 80-120KB ke aas paas aa jayega!
           canvas.toBlob((blob) => {
             if (blob) {
               const newFileName = file.name.replace(/\.[^/.]+$/, "") + ".webp";
               const newFile = new File([blob], newFileName, { type: 'image/webp', lastModified: Date.now() });
               resolve(newFile);
             } else {
-              resolve(file); // Agar kisi wajah se fail hua, toh original file upload ho jayegi
+              resolve(file); 
             }
-          }, 'image/webp', 0.85); 
+          }, 'image/webp', 0.80); 
         };
         img.onerror = () => resolve(file);
       };
@@ -818,6 +849,7 @@ const handleProductToggle = async (product: any) => {
      const existingMeta = (isEditMode && editingProduct) ? safeParseJSON(editingProduct.meta, {}) : {};
       const metaObj = {
         ...existingMeta,
+        tags: uploadForm.tags || [], // 🌟 NAYA: Meta object mein tags save ho jayenge
         attributes: {
           ...(existingMeta.attributes || {}),
           available_colors: [],
@@ -831,7 +863,7 @@ const handleProductToggle = async (product: any) => {
       const parsedMrp = parseFloat(uploadForm.mrp) || 0;
       let calculatedDiscount = 0;
 
-      // Agar MRP Cost se zyada hai, tabhi discount calculate hoga
+     // Agar MRP Cost se zyada hai, tabhi discount calculate hoga
       if (parsedMrp > parsedCost) {
           calculatedDiscount = Math.round(((parsedMrp - parsedCost) / parsedMrp) * 100);
       }
@@ -840,9 +872,10 @@ const handleProductToggle = async (product: any) => {
         name: uploadForm.name,
         subcategory: uploadForm.subcategory,
         description: uploadForm.description, 
-        mrp: parsedMrp > 0 ? parsedMrp : null, // 🌟 FIX: Agar 0 hai toh DB mein null jayega
+        mrp: parsedMrp > 0 ? parsedMrp : null, 
         cost: parsedCost,
-        discount: calculatedDiscount > 0 ? calculatedDiscount : null, // 🌟 FIX: Discount DB mein save hoga
+        // 🌟 NAYA: Agar MRP nahi hai ya calculate nahi hua, toh discount hamesha 0 jayega
+        discount: calculatedDiscount > 0 ? calculatedDiscount : 0, 
         meta: JSON.stringify(metaObj),
         img: JSON.stringify({ images: [...existingImages, ...imageUrls] })
       };
@@ -870,11 +903,10 @@ const handleProductToggle = async (product: any) => {
     }
   };
 
-  const resetUploadForm = () => { setIsEditMode(false); setEditingProductId(null); setUploadForm({ name: '', subcategory: '', mrp: '', cost: '', description: '', boxSize: '6' }); setUploadImages([]); setUploadImagePreviews([]); setExistingImages([]); setSizeConfig({}); };
+  const resetUploadForm = () => { setIsEditMode(false); setEditingProductId(null); setUploadForm({ name: '', subcategory: '', mrp: '', cost: '', description: '', boxSize: '6', tags: [] }); setUploadImages([]); setUploadImagePreviews([]); setExistingImages([]); setSizeConfig({}); };
  const startEditProduct = (p: any) => { 
     setIsEditMode(true); 
     setEditingProductId(p.id); 
-    // 🌟 FIX 2: editingProduct ko bhi set karna zaroori hai
     setEditingProduct(p); 
     
     setUploadForm({ 
@@ -882,9 +914,9 @@ const handleProductToggle = async (product: any) => {
       subcategory: p.subcategory || '', 
       mrp: p.mrp ? p.mrp.toString() : '', 
       cost: p.cost ? p.cost.toString() : '0', 
-      // Ab fetch query theek hone ke baad yahan value aa jayegi
       description: p.description || '', 
-      boxSize: safeParseJSON(p.meta, {})?.attributes?.box_size?.[0]?.toString() || '6' 
+      boxSize: safeParseJSON(p.meta, {})?.attributes?.box_size?.[0]?.toString() || '6',
+      tags: safeParseJSON(p.meta, {})?.tags || [] // 🌟 NAYA: Loaded tags
     }); 
     
     setExistingImages(safeParseJSON(p.img, { images: [] }).images || []); 
@@ -893,7 +925,7 @@ const handleProductToggle = async (product: any) => {
     setUploadImagePreviews([]); 
     setView('upload'); 
   };
-  const startCopyProduct = (p: any) => { setIsEditMode(false); setEditingProductId(null); setUploadForm({ name: '', subcategory: p.subcategory, mrp: '', cost: '', description: p.description || '', boxSize: safeParseJSON(p.meta, {})?.attributes?.box_size?.[0]?.toString() || '6' }); setSizeConfig(safeParseJSON(p.meta, {})?.attributes?.available_sizes || {}); setExistingImages([]); setUploadImages([]); setUploadImagePreviews([]); setView('upload'); showToast("Details copied."); };
+  const startCopyProduct = (p: any) => { setIsEditMode(false); setEditingProductId(null); setUploadForm({ name: '', subcategory: p.subcategory, mrp: '', cost: '', description: p.description || '', boxSize: safeParseJSON(p.meta, {})?.attributes?.box_size?.[0]?.toString() || '6', tags: safeParseJSON(p.meta, {})?.tags || [] }); setSizeConfig(safeParseJSON(p.meta, {})?.attributes?.available_sizes || {}); setExistingImages([]); setUploadImages([]); setUploadImagePreviews([]); setView('upload'); showToast("Details copied."); };
   const openVariantSheet = (p: any) => { setEditingProduct(p); setEditingSizeConfig(safeParseJSON(p.meta, {})?.attributes?.available_sizes || {}); setActiveSheet(true); };
  const saveVariantStatus = async () => { 
     setIsUpdatingVariant(true); 
@@ -1376,7 +1408,52 @@ const safeUserQuery = userSearchQuery.toLowerCase().trim();
             <div className="p-4 bg-gray-50 border-b border-gray-200 mb-4 sticky top-0 z-30"><h2 className="font-black text-gray-800 uppercase tracking-wider text-sm flex items-center gap-2">{isEditMode ? <Edit2 size={16}/> : <UploadCloud size={16}/>} {isEditMode ? 'Edit Product' : 'Upload New Product'}</h2></div>
             <div className="px-4 space-y-5 pb-10">
               <div><label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Product Name</label><input type="text" className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm font-semibold outline-none" value={uploadForm.name} onChange={e => setUploadForm({...uploadForm, name: e.target.value})} /></div>
-              <div><label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Category</label><select className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm font-semibold outline-none appearance-none" value={uploadForm.subcategory} onChange={handleCategoryChange} disabled={isEditMode}><option value="" disabled>Select Category</option>{categories.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}</select></div>
+              <div>
+                <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Category</label>
+                <select className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm font-semibold outline-none appearance-none" value={uploadForm.subcategory} onChange={handleCategoryChange} disabled={isEditMode}>
+                  <option value="" disabled>Select Category</option>
+                  {categories.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                </select>
+                
+                {/* 🌟 NAYA: Category Tags (Pills) rendering */}
+                {uploadForm.subcategory && (() => {
+                  const selectedCat = categories.find(c => c.name === uploadForm.subcategory);
+                  const catTags = safeParseJSON(selectedCat?.tags, []); // DB se category ke tags aayenge
+                  
+                  if (catTags.length > 0) {
+                    return (
+                      <div className="mt-3">
+                        <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1.5 block">Select Product Tags (Optional)</label>
+                        <div className="flex flex-wrap gap-2">
+                          {catTags.map((tag: string) => {
+                            const isSelected = uploadForm.tags?.includes(tag);
+                            return (
+                              <button 
+                                key={tag}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  setUploadForm(prev => {
+                                    const currentTags = prev.tags || [];
+                                    if (currentTags.includes(tag)) {
+                                      return { ...prev, tags: currentTags.filter(t => t !== tag) };
+                                    } else {
+                                      return { ...prev, tags: [...currentTags, tag] };
+                                    }
+                                  });
+                                }}
+                                className={`px-3 py-1.5 rounded-lg text-[11px] font-black tracking-wide border transition-all active:scale-95 ${isSelected ? 'bg-purple-100 text-purple-700 border-purple-200' : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'}`}
+                              >
+                                {tag} {isSelected && '✓'}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
+              </div>
               <div className="grid grid-cols-2 gap-4">
                 <div><label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Cost Price (₹)</label><input type="number" className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm font-black outline-none" value={uploadForm.cost} onChange={e => setUploadForm({...uploadForm, cost: e.target.value})} /></div>
                 <div><label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">MRP (₹)</label><input type="number" className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm font-bold text-gray-500 outline-none" value={uploadForm.mrp} onChange={e => setUploadForm({...uploadForm, mrp: e.target.value})} /></div>
@@ -1509,7 +1586,19 @@ const safeUserQuery = userSearchQuery.toLowerCase().trim();
                                </label>
                             </div>
                           </div>
-                          <div className="flex items-center gap-1.5 mt-1"><p className="font-black text-gray-900 text-base">₹{p.cost}</p><p className="text-[10px] text-gray-400 line-through font-bold">₹{p.mrp}</p></div>
+                          {/* 🌟 FIX: Added PackCharge to display cost in seller view */}
+                          {(() => {
+                             const userConfig = typeof currentUser?.user_config === 'string' ? safeParseJSON(currentUser.user_config, {}) : (currentUser?.user_config || {});
+                             const packVal = Number(userConfig.UnitPackCharge || 0);
+                             const packCharge = round1(userConfig.UnitPackChargeType === 'percent' ? (Number(p.cost || 0) * packVal) / 100 : packVal);
+                             const displayCost = round1(Number(p.cost || 0) + packCharge);
+                             return (
+                               <div className="flex items-center gap-1.5 mt-1">
+                                 <p className="font-black text-gray-900 text-base">₹{displayCost}</p>
+                                 {p.mrp > 0 && <p className="text-[10px] text-gray-400 line-through font-bold">₹{p.mrp}</p>}
+                               </div>
+                             );
+                          })()}
                         </div> {/* 🌟 YE WALA DIV MISSING THA */}
                         <div className="flex flex-wrap items-center gap-2 mt-2 pt-2 border-t border-gray-50">
                           <button onClick={() => startEditProduct(p)} className="flex items-center gap-1 text-[10px] font-bold text-gray-600 bg-gray-50 px-2 py-1.5 rounded-md"><Edit2 size={12} /> Edit</button>
@@ -1703,16 +1792,27 @@ const safeUserQuery = userSearchQuery.toLowerCase().trim();
                     totalItemsQty += item.qty;
                  });
                  if(orderItems.length === 0 && newOrderItems.length === 0) currentCalc = selectedOrder.amount;
+                 // 🌟 NAYA: Shipping Charge invoice layout mein
+                 const shipCharge = safeParseJSON(selectedOrder.meta, {}).shippingCharge || 0;
 
                  return (
                     <div className="flex justify-between items-end pt-2">
                       <div className="text-xs text-gray-500 font-bold">Total Items / Qty: {orderItems.length + newOrderItems.length} / {totalItemsQty}</div>
                       <div className="text-right w-1/3">
-                        <div className="flex justify-between font-bold text-sm border-b border-gray-200 pb-1 mb-1">
-                          <span>Total</span>
-                          <span>₹{Math.round(currentCalc).toLocaleString('en-IN')}.00</span>
+                        <div className="flex justify-between font-bold text-sm border-b border-gray-200 pb-1 mb-1 text-gray-600">
+                          <span>Items Total</span>
+                          <span>₹{Math.round(currentCalc).toLocaleString('en-IN')}</span>
                         </div>
-                        
+                        {shipCharge > 0 && (
+                           <div className="flex justify-between font-bold text-sm border-b border-gray-200 pb-1 mb-1 text-gray-600">
+                             <span>Shipping Charge</span>
+                             <span>+ ₹{Math.round(shipCharge).toLocaleString('en-IN')}</span>
+                           </div>
+                        )}
+                        <div className="flex justify-between font-black text-base pt-1 text-gray-900">
+                          <span>Grand Total</span>
+                          <span>₹{Math.round(currentCalc + shipCharge).toLocaleString('en-IN')}</span>
+                        </div>
                       </div>
                     </div>
                  );
@@ -2525,10 +2625,19 @@ const safeUserQuery = userSearchQuery.toLowerCase().trim();
                             {imgData.images[0] && <Image src={imgData.images[0]} alt="" fill sizes="(max-width: 768px) 50vw, 33vw" className="object-cover mix-blend-multiply" />}
                           </div>
                           <h4 className="font-bold text-xs text-gray-900 truncate">{p.name}</h4>
-                          <div className="flex items-center gap-1 mt-1">
-                            <p className="font-black text-blue-600 text-[11px]">₹{p.cost}</p>
-                            <p className="text-[9px] text-gray-400 line-through font-bold">₹{p.mrp}</p>
-                          </div>
+                          {/* 🌟 FIX: Added PackCharge in Manual Order item search UI */}
+                          {(() => {
+                             const userConfig = typeof currentUser?.user_config === 'string' ? safeParseJSON(currentUser.user_config, {}) : (currentUser?.user_config || {});
+                             const packVal = Number(userConfig.UnitPackCharge || 0);
+                             const packCharge = round1(userConfig.UnitPackChargeType === 'percent' ? (Number(p.cost || 0) * packVal) / 100 : packVal);
+                             const displayCost = round1(Number(p.cost || 0) + packCharge);
+                             return (
+                               <div className="flex items-center gap-1 mt-1">
+                                 <p className="font-black text-blue-600 text-[11px]">₹{displayCost}</p>
+                                 {p.mrp > 0 && <p className="text-[9px] text-gray-400 line-through font-bold">₹{p.mrp}</p>}
+                               </div>
+                             );
+                          })()}
                         </div>
                       )
                     })}
@@ -2655,12 +2764,24 @@ const safeUserQuery = userSearchQuery.toLowerCase().trim();
                       });
                       totalAmt = Math.round(totalAmt);
 
+                      // 🌟 NAYA: Fetch Seller Config for Shipping Charge
+                      const userConfig = typeof currentUser?.user_config === 'string' ? safeParseJSON(currentUser.user_config, {}) : (currentUser?.user_config || {});
+                      const shippingCharge = Number(userConfig.ShippingCharge || 0);
+
                       const { data: newOrder, error } = await supabase.from('orders').insert({
-                          userid: draftUser.id, amount: totalAmt, finalAmount: totalAmt, status: 'Confirmed', 
+                          userid: draftUser.id, 
+                          amount: totalAmt, 
+                          finalAmount: totalAmt + shippingCharge, // 🌟 FIX: Shipping charge added to final amount
+                          status: 'Confirmed', 
                           created_by: currentUser.id, city: draftUser.city, state: draftUser.state, 
                           address: draftUser.address, pincode: draftUser.pincode, phone: draftUser.phone, 
                           box: totalBoxes, pcs: totalPcs,
-                          meta: JSON.stringify({ expectedDispatch: '', sellerName: currentUser.name })
+                          meta: JSON.stringify({ 
+                              expectedDispatch: '', 
+                              sellerName: currentUser.name,
+                              paymentMode: userConfig.PaymentMode || 'COD',
+                              shippingCharge: shippingCharge 
+                          })
                       }).select().single();
                       if(error) throw error;
 
